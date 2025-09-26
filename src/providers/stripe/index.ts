@@ -3,7 +3,6 @@ import DodoPayments from 'dodopayments';
 import { input, select, checkbox } from '@inquirer/prompts';
 
 export default {
-    // Format: dodo-migrate [provider] [arguments]
     command: 'stripe [arguments]',
     describe: 'Migrate from Stripe to Dodo Payments',
     builder: (yargs: any) => {
@@ -37,7 +36,6 @@ export default {
             });
     },
     handler: async (argv: any) => {
-        // Store the details of the API keys and mode, and prompt the user if they fail to provide it in the CLI
         const PROVIDER_API_KEY = argv['provider-api-key'] || await input({ 
             message: 'Enter your Stripe Secret API Key (sk_...):', 
             required: true 
@@ -55,12 +53,10 @@ export default {
             default: 'test_mode'
         });
 
-        // Set up the Stripe SDK
         const stripe = new Stripe(PROVIDER_API_KEY, {
             apiVersion: '2025-02-24.acacia',
         });
 
-        // Test Stripe connection
         try {
             await stripe.accounts.retrieve();
             console.log('[LOG] Successfully connected to Stripe');
@@ -69,21 +65,16 @@ export default {
             process.exit(1);
         }
 
-        // Set up the Dodo Payments SDK
         const client = new DodoPayments({
             bearerToken: DODO_API_KEY,
             environment: MODE,
         });
 
-        // This variable will store the brand ID to be used for creating products in a specific Dodo Payments brand
         let brand_id = argv['dodo-brand-id'];
-        // If the brand_id variable is null (i.e., the user did not provide it in the CLI), prompt the user to select a brand from their Dodo Payments account.
         if (!brand_id) {
             try {
-                // List the brands for the current account from the Dodo Payments SDK
                 const brands = await client.brands.list();
 
-                // Give the user an option to select their preferred brand in their Dodo Payments account
                 brand_id = await select({
                     message: 'Select your Dodo Payments brand:',
                     choices: brands.items.map((brand) => ({
@@ -97,7 +88,6 @@ export default {
             }
         }
 
-        // Determine what to migrate
         let migrateTypes: string[] = [];
         if (argv['migrate-types']) {
             migrateTypes = argv['migrate-types'].split(',').map((type: string) => type.trim());
@@ -115,17 +105,14 @@ export default {
 
         console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')}`);
 
-        // Migrate Products
         if (migrateTypes.includes('products')) {
             await migrateProducts(stripe, client, brand_id);
         }
 
-        // Migrate Coupons
         if (migrateTypes.includes('coupons')) {
             await migrateCoupons(stripe, client, brand_id);
         }
 
-        // Migrate Customers
         if (migrateTypes.includes('customers')) {
             await migrateCustomers(stripe, client, brand_id);
         }
@@ -138,7 +125,6 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
     console.log('\n[LOG] Starting products migration...');
     
     try {
-        // Fetch all products from Stripe
         const products = await stripe.products.list({ 
             limit: 100,
             active: true 
@@ -151,12 +137,9 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
         console.log(`[LOG] Found ${products.data.length} active products in Stripe`);
 
-        // This will be the array of products to be created in Dodo Payments
         const ProductsToMigrate: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
 
-        // Process each product
         for (const product of products.data) {
-            // Get prices for this product
             const prices = await stripe.prices.list({
                 product: product.id,
                 active: true
@@ -167,12 +150,10 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                 continue;
             }
 
-            // For each price, create a product in Dodo Payments
             for (const price of prices.data) {
                 const isRecurring = price.type === 'recurring';
                 
                 if (isRecurring) {
-                    // Handle subscription products
                     ProductsToMigrate.push({
                         type: 'subscription_product',
                         data: {
@@ -192,7 +173,6 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                         }
                     });
                 } else {
-                    // Handle one-time products
                     ProductsToMigrate.push({
                         type: 'one_time_product',
                         data: {
@@ -226,7 +206,6 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
             console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${price.toFixed(2)} (${type}${billing})`);
         });
 
-        // Ask the user for final confirmation before creating the products in Dodo Payments
         const migrateProducts = await select({
             message: 'Proceed to create these products in Dodo Payments?',
             choices: [
@@ -236,7 +215,6 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
         });
 
         if (migrateProducts === 'yes') {
-            // Iterate all the stored products and create them in Dodo Payments
             for (const product of ProductsToMigrate) {
                 console.log(`[LOG] Migrating product: ${product.data.name}`);
                 try {
@@ -260,7 +238,6 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
     console.log('\n[LOG] Starting coupons migration...');
     
     try {
-        // Fetch all coupons from Stripe
         const coupons = await stripe.coupons.list({ 
             limit: 100 
         });
@@ -272,12 +249,9 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
         console.log(`[LOG] Found ${coupons.data.length} coupons in Stripe`);
 
-        // This will be the array of coupons to be created in Dodo Payments
         const CouponsToMigrate: any[] = [];
 
-        // Process each coupon
         for (const coupon of coupons.data) {
-            // Skip if coupon is not valid
             if (!coupon.valid) {
                 console.log(`[LOG] Skipping invalid coupon: ${coupon.id}`);
                 continue;
@@ -322,7 +296,6 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
             console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${discount} discount`);
         });
 
-        // Ask the user for final confirmation before creating the coupons in Dodo Payments
         const migrateCoupons = await select({
             message: 'Proceed to create these coupons in Dodo Payments?',
             choices: [
@@ -332,7 +305,6 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
         });
 
         if (migrateCoupons === 'yes') {
-            // Iterate all the stored coupons and create them in Dodo Payments
             for (const coupon of CouponsToMigrate) {
                 console.log(`[LOG] Migrating coupon: ${coupon.name} (${coupon.code})`);
                 try {
@@ -356,7 +328,6 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
     console.log('\n[LOG] Starting customers migration...');
     
     try {
-        // Fetch all customers from Stripe
         const customers = await stripe.customers.list({ 
             limit: 100 
         });
@@ -368,12 +339,9 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
 
         console.log(`[LOG] Found ${customers.data.length} customers in Stripe`);
 
-        // This will be the array of customers to be created in Dodo Payments
         const CustomersToMigrate: any[] = [];
 
-        // Process each customer
         for (const customer of customers.data) {
-            // Skip deleted customers
             if (customer.deleted) {
                 console.log(`[LOG] Skipping deleted customer: ${customer.id}`);
                 continue;
@@ -409,7 +377,6 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
             console.log(`${index + 1}. ${customer.name || 'Unnamed'} (${customer.email || 'No email'})`);
         });
 
-        // Ask the user for final confirmation before creating the customers in Dodo Payments
         const migrateCustomers = await select({
             message: 'Proceed to create these customers in Dodo Payments?',
             choices: [
@@ -419,7 +386,6 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
         });
 
         if (migrateCustomers === 'yes') {
-            // Iterate all the stored customers and create them in Dodo Payments
             for (const customer of CustomersToMigrate) {
                 console.log(`[LOG] Migrating customer: ${customer.name || customer.email || 'Unnamed'}`);
                 try {
