@@ -1,6 +1,6 @@
-import { listProducts, lemonSqueezySetup, getProduct, getStore, Store } from '@lemonsqueezy/lemonsqueezy.js';
+import { listProducts, lemonSqueezySetup, getProduct, getStore, Store, listDiscounts } from '@lemonsqueezy/lemonsqueezy.js';
 import DodoPayments from 'dodopayments';
-import { input, select } from '@inquirer/prompts';
+import { input, select, checkbox } from '@inquirer/prompts';
 
 
 export default {
@@ -31,6 +31,11 @@ export default {
                 choices: ['test_mode', 'live_mode'],
                 demandOption: false,
                 default: 'test_mode'
+            })
+            .option('types', {
+                describe: 'Migration types (comma-separated)',
+                type: 'string',
+                demandOption: false
             });
     },
     handler: async (argv: any) => {
@@ -45,6 +50,21 @@ export default {
             ],
             default: 'test_mode'
         });
+
+        // Determine migration types
+        let migrationTypes: string[] = [];
+        if (argv['types']) {
+            migrationTypes = argv['types'].split(',').map((type: string) => type.trim());
+        } else {
+            migrationTypes = await checkbox({
+                message: 'Select what you want to migrate:',
+                choices: [
+                    { name: 'Products', value: 'products', checked: true },
+                    { name: 'Coupons/Discounts', value: 'coupons', checked: true }
+                ],
+                required: true
+            });
+        }
 
         // Set up the Lemon Squeezy SDK
         lemonSqueezySetup({
@@ -90,92 +110,184 @@ export default {
 
         // This will be the array of products to be created in Dodo Payments
         const Products: { type: 'one_time_product', data: any }[] = [];
+        
+        // This will be the array of coupons to be created in Dodo Payments
+        const Coupons: { data: any }[] = [];
 
-        // List the products from the Lemon Squeezy SDK
-        const ListProducts = await listProducts();
-        if (ListProducts.error || ListProducts.statusCode !== 200) {
-            console.log("[ERROR] Failed to fetch products from Lemon Squeezy!\n", ListProducts.error);
-            process.exit(1);
-        }
-
-        console.log('[LOG] Found ' + ListProducts.data.data.length + ' products in Lemon Squeezy');
-
-        // Iterate the products
-        for (let product of ListProducts.data.data) {
-            // This will contain the store information of the current product. This information is crucial to determine the currency of the product.
-            // Do not confuse this with StoresData which is the cache of all stores
-            let StoreData: null | Store = null;
-
-            // If the store data is not already fetched, fetch it
-            if (!StoresData[product.attributes.store_id]) {
-                console.log(`[LOG] Fetching store data for store ID ${product.attributes.store_id}`);
-
-                // Fetch the store data from Lemon Squeezy
-                const FetchStoreData = await getStore(product.attributes.store_id);
-                if (FetchStoreData.error || FetchStoreData.statusCode !== 200) {
-                    console.log(`[ERROR] Failed to fetch store data for store ID ${product.attributes.store_id}\n`, FetchStoreData.error);
-                    process.exit(1);
-                }
-                // If the store data is fetched and cached, use it
-                StoresData[product.attributes.store_id] = FetchStoreData.data;
-                // Store the currently fetched data in the local StoreData variable to access the current store information below
-                StoreData = FetchStoreData.data;
-            } else {
-                console.log(`[LOG] Using cached store data for store ID ${product.attributes.store_id}`);
-                StoreData = StoresData[product.attributes.store_id];
+        // Migrate products if selected
+        if (migrationTypes.includes('products')) {
+            console.log('\n[LOG] Starting products migration...');
+            
+            // List the products from the Lemon Squeezy SDK
+            const ListProducts = await listProducts();
+            if (ListProducts.error || ListProducts.statusCode !== 200) {
+                console.log("[ERROR] Failed to fetch products from Lemon Squeezy!\n", ListProducts.error);
+                process.exit(1);
             }
 
-            // Store the product data in the Products array to be created later in Dodo Payments
-            Products.push({
-                type: 'one_time_product',
-                data: {
-                    name: product.attributes.name,
-                    tax_category: 'saas',
-                    price: {
-                        currency: StoreData.data.attributes.currency as any,
-                        price: product.attributes.price,
-                        discount: 0,
-                        purchasing_power_parity: false,
-                        type: 'one_time_price'
-                    },
-                    brand_id: brand_id
-                }
-            });
-        }
+            console.log('[LOG] Found ' + ListProducts.data.data.length + ' products in Lemon Squeezy');
 
-        console.log('\n[LOG] These are the products to be migrated:');
-        Products.forEach((product, index) => {
-            console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${(product.data.price.price / 100).toFixed(2)} (${product.type === 'one_time_product' ? 'One Time' : 'Unknown'})`);
-        });
+            // Iterate the products
+            for (let product of ListProducts.data.data) {
+                // This will contain the store information of the current product. This information is crucial to determine the currency of the product.
+                // Do not confuse this with StoresData which is the cache of all stores
+                let StoreData: null | Store = null;
 
-        // Ask the user for final confirmation before creating the products in Dodo Payments
-        const migrateProducts = await select({
-            message: 'Proceed to create these products in Dodo Payments?',
-            choices: [
-                { name: 'Yes', value: 'yes' },
-                { name: 'No', value: 'no' }
-            ],
-        });
+                // If the store data is not already fetched, fetch it
+                if (!StoresData[product.attributes.store_id]) {
+                    console.log(`[LOG] Fetching store data for store ID ${product.attributes.store_id}`);
 
-        if (migrateProducts === 'yes') {
-            // Iterate all the stored products and create them in Dodo Payments
-            for (let product of Products) {
-                // Blank line for better readability in logs
-                console.log();
-                // If the product type is one_time_product, invoke the client.products.create method
-                if (product.type === 'one_time_product') {
-                    console.log(`[LOG] Migrating product: ${product.data.name}`);
-                    // Create the product in Dodo Payments
-                    const createdProduct = await client.products.create(product.data);
-                    console.log(`[LOG] Migration for product: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
+                    // Fetch the store data from Lemon Squeezy
+                    const FetchStoreData = await getStore(product.attributes.store_id);
+                    if (FetchStoreData.error || FetchStoreData.statusCode !== 200) {
+                        console.log(`[ERROR] Failed to fetch store data for store ID ${product.attributes.store_id}\n`, FetchStoreData.error);
+                        process.exit(1);
+                    }
+                    // If the store data is fetched and cached, use it
+                    StoresData[product.attributes.store_id] = FetchStoreData.data;
+                    // Store the currently fetched data in the local StoreData variable to access the current store information below
+                    StoreData = FetchStoreData.data;
                 } else {
-                    console.log(`[LOG] Skipping product: ${product.data.name} for unknown product type (example one time, subscription, etc)`);
+                    console.log(`[LOG] Using cached store data for store ID ${product.attributes.store_id}`);
+                    StoreData = StoresData[product.attributes.store_id];
                 }
+
+                // Store the product data in the Products array to be created later in Dodo Payments
+                Products.push({
+                    type: 'one_time_product',
+                    data: {
+                        name: product.attributes.name,
+                        tax_category: 'saas',
+                        price: {
+                            currency: StoreData.data.attributes.currency as any,
+                            price: product.attributes.price,
+                            discount: 0,
+                            purchasing_power_parity: false,
+                            type: 'one_time_price'
+                        },
+                        brand_id: brand_id
+                    }
+                });
             }
-            console.log('\n[LOG] All products migrated successfully!');
-        } else {
-            console.log('[LOG] Migration aborted by user');
-            process.exit(0);
+
+            console.log('\n[LOG] These are the products to be migrated:');
+            Products.forEach((product, index) => {
+                console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${(product.data.price.price / 100).toFixed(2)} (${product.type === 'one_time_product' ? 'One Time' : 'Unknown'})`);
+            });
+
+            // Ask the user for final confirmation before creating the products in Dodo Payments
+            const migrateProducts = await select({
+                message: 'Proceed to create these products in Dodo Payments?',
+                choices: [
+                    { name: 'Yes', value: 'yes' },
+                    { name: 'No', value: 'no' }
+                ],
+            });
+
+            if (migrateProducts === 'yes') {
+                // Iterate all the stored products and create them in Dodo Payments
+                for (let product of Products) {
+                    // Blank line for better readability in logs
+                    console.log();
+                    // If the product type is one_time_product, invoke the client.products.create method
+                    if (product.type === 'one_time_product') {
+                        console.log(`[LOG] Migrating product: ${product.data.name}`);
+                        // Create the product in Dodo Payments
+                        const createdProduct = await client.products.create(product.data);
+                        console.log(`[LOG] Migration for product: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
+                    } else {
+                        console.log(`[LOG] Skipping product: ${product.data.name} for unknown product type (example one time, subscription, etc)`);
+                    }
+                }
+                console.log('\n[LOG] All products migrated successfully!');
+            } else {
+                console.log('[LOG] Products migration aborted by user');
+            }
+        }
+
+        // Migrate coupons if selected
+        if (migrationTypes.includes('coupons')) {
+            console.log('\n[LOG] Starting coupons migration...');
+            
+            // List the discounts from the Lemon Squeezy SDK
+            const ListDiscounts = await listDiscounts();
+            if (ListDiscounts.error || ListDiscounts.statusCode !== 200) {
+                console.log("[ERROR] Failed to fetch discounts from Lemon Squeezy!\n", ListDiscounts.error);
+                process.exit(1);
+            }
+
+            console.log('[LOG] Found ' + ListDiscounts.data.data.length + ' discounts in Lemon Squeezy');
+
+            // Filter only published discounts
+            const validDiscounts = ListDiscounts.data.data.filter((discount: any) => 
+                discount.attributes.status === 'published'
+            );
+
+            console.log('[LOG] Found ' + validDiscounts.length + ' valid (published) discounts');
+
+            // Process each discount
+            for (let discount of validDiscounts) {
+                const discountData = {
+                    name: discount.attributes.name,
+                    code: discount.attributes.code,
+                    type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
+                    value: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount / 100,
+                    currency: discount.attributes.amount_type === 'fixed' ? 'USD' : undefined, // Default currency for fixed amounts
+                    usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
+                    expires_at: discount.attributes.expires_at,
+                    brand_id: brand_id
+                };
+
+                Coupons.push({ data: discountData });
+            }
+
+            if (Coupons.length > 0) {
+                console.log('\n[LOG] These are the coupons to be migrated:');
+                Coupons.forEach((coupon, index) => {
+                    const value = coupon.data.type === 'percentage' ? `${coupon.data.value}%` : `${coupon.data.currency} ${coupon.data.value}`;
+                    const expiry = coupon.data.expires_at ? ` (expires: ${new Date(coupon.data.expires_at).toLocaleDateString()})` : '';
+                    const usage = coupon.data.usage_limit ? ` (max uses: ${coupon.data.usage_limit})` : '';
+                    console.log(`${index + 1}. ${coupon.data.name} (${coupon.data.code}) - ${value}${expiry}${usage}`);
+                });
+
+                // Ask the user for final confirmation before creating the coupons in Dodo Payments
+                const migrateCoupons = await select({
+                    message: 'Proceed to create these coupons in Dodo Payments?',
+                    choices: [
+                        { name: 'Yes', value: 'yes' },
+                        { name: 'No', value: 'no' }
+                    ],
+                });
+
+                if (migrateCoupons === 'yes') {
+                    // Iterate all the stored coupons and create them in Dodo Payments
+                    for (let coupon of Coupons) {
+                        console.log();
+                        console.log(`[LOG] Migrating coupon: ${coupon.data.name} (${coupon.data.code})`);
+                        try {
+                            // Create the coupon in Dodo Payments
+                            const createdCoupon = await client.discounts.create(coupon.data);
+                            console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
+                        } catch (error) {
+                            console.log(`[ERROR] Failed to migrate coupon: ${coupon.data.name} - ${error}`);
+                        }
+                    }
+                    console.log('\n[LOG] All coupons migrated successfully!');
+                } else {
+                    console.log('[LOG] Coupons migration aborted by user');
+                }
+            } else {
+                console.log('[LOG] No valid coupons found to migrate');
+            }
+        }
+
+        // Final completion message
+        const completedMigrations: string[] = [];
+        if (migrationTypes.includes('products')) completedMigrations.push('products');
+        if (migrationTypes.includes('coupons')) completedMigrations.push('coupons');
+        
+        if (completedMigrations.length > 0) {
+            console.log(`\n[LOG] Migration completed for: ${completedMigrations.join(', ')}`);
         }
     }
 }

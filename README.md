@@ -14,8 +14,8 @@
 Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate your data from popular payment providers into Dodo Payments. Whether you're moving products, customers, or discount codes, Dodo Migrate guides you through a secure, auditable, and repeatable migration process with interactive prompts and sensible defaults.
 
 **Supported providers:**
-- [x] Lemon Squeezy
-- [x] Stripe
+- [x] Lemon Squeezy (Products, Coupons)
+- [x] Stripe (Products, Coupons, Customers)
 - [ ] Gumroad
 - [ ] 2Checkout
 - [ ] FastSpring
@@ -23,7 +23,7 @@ Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate y
 
 **Supported models:**
 - [x] Products
-- [x] Discount codes
+- [x] Discount codes/Coupons
 - [x] Customers
 
 ## Contents
