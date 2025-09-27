@@ -251,7 +251,7 @@ export default {
                     name: discount.attributes.name,
                     code: discount.attributes.code,
                     type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
-                    value: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount / 100,
+                    value: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount,
                     // For fixed amount discounts, prefer discount currency; fallback to store currency (cached or fetched above)
                     currency: discount.attributes.amount_type === 'fixed' ? fixedCurrency : undefined,
                     usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
@@ -265,7 +265,9 @@ export default {
             if (Coupons.length > 0) {
                 console.log('\n[LOG] These are the coupons to be migrated:');
                 Coupons.forEach((coupon, index) => {
-                    const value = coupon.data.type === 'percentage' ? `${coupon.data.value}%` : `${coupon.data.currency} ${coupon.data.value}`;
+                    const value = coupon.data.type === 'percentage'
+                        ? `${coupon.data.value}%`
+                        : `${coupon.data.currency} ${(coupon.data.value / 100).toFixed(2)}`;
                     const expiry = coupon.data.expires_at ? ` (expires: ${new Date(coupon.data.expires_at).toLocaleDateString()})` : '';
                     const usage = coupon.data.usage_limit ? ` (max uses: ${coupon.data.usage_limit})` : '';
                     console.log(`${index + 1}. ${coupon.data.name} (${coupon.data.code}) - ${value}${expiry}${usage}`);
