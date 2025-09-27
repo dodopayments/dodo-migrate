@@ -14,7 +14,7 @@ try {
         const latestVersion = packageInformation['dist-tags'].latest;
         const currentVersion = (await import('../package.json')).version;
         if (latestVersion !== currentVersion) {
-            console.log(`\n\x1b[33mA new version of the Dodo Payments Migrator is available! (v${latestVersion})\x1b[0m\nPlease update by running: \x1b[36mnpm install -g dodo-migrate@latest\x1b[0m\n`);
+            console.log(`\n\x1b[33mA new version of the DodoPayments Migrator is available! (v${latestVersion})\x1b[0m\nPlease update by running: \x1b[36mnpm install -g dodo-migrate@latest\x1b[0m\n`);
         }
     }
 } catch { }
