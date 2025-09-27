@@ -12,7 +12,7 @@
   },
   "name": "dodo-migrate",
   "version": "0.1.0",
-  "description": "Migrate data from other payment providers to Dodo Payments",
+  "description": "Migrate data from other payment providers to DodoPayments",
   "main": "src/index.ts",
   "repository": {
     "type": "git",
@@ -23,7 +23,7 @@
     "migrate",
     "payments"
   ],
-  "author": "Dodo Payments",
+  "author": "DodoPayments",
   "license": "GPL-3.0",
   "type": "module",
   "devDependencies": {

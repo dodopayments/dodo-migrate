@@ -11,10 +11,10 @@
   </a>
 </p>
 
-Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate your data from popular payment providers into Dodo Payments. Whether you're moving products, customers, or discount codes, Dodo Migrate guides you through a secure, auditable, and repeatable migration process with interactive prompts and sensible defaults.
+Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate your data from popular payment providers into DodoPayments. Whether you're moving products, customers, or discount codes, Dodo Migrate guides you through a secure, auditable, and repeatable migration process with interactive prompts and sensible defaults.
 
 **Supported providers:**
-- [x] Lemon Squeezy
+- [x] LemonSqueezy
 - [ ] Gumroad
 - [ ] 2Checkout
 - [ ] FastSpring
@@ -42,12 +42,12 @@ Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate y
 ## Features
 - Safe, confirm-before-write migration flow
 - Interactive prompts with sensible defaults
-- Works with Dodo Payments test or live environments
+- Works with DodoPayments test or live environments
 - Incremental, repeatable runs
 
 ## Requirements
 - Node.js ≥ 18 (for native `fetch` used by the CLI)
-- Provider API key and Dodo Payments API key
+- Provider API key and DodoPayments API key
 
 ## Install
 ```
@@ -55,7 +55,7 @@ npm i -g dodo-migrate
 ```
 
 ## Quick start
-Migrate from Lemon Squeezy to Dodo Payments:
+Migrate from LemonSqueezy to DodoPayments:
 ```
 dodo-migrate lemonsqueezy
 ```
@@ -71,10 +71,10 @@ Options (all optional; interactive prompts will fill in when omitted):
 
 | option | values | description |
 | --- | --- | --- |
-| `--provider-api-key` | string | Provider API key (e.g., Lemon Squeezy) |
-| `--dodo-api-key` | string | Dodo Payments API key |
-| `--mode` | `test_mode` / `live_mode` | Dodo Payments environment (default: `test_mode`) |
-| `--dodo-brand-id` | string | Target Dodo Payments brand ID |
+| `--provider-api-key` | string | Provider API key (e.g., LemonSqueezy) |
+| `--dodo-api-key` | string | DodoPayments API key |
+| `--mode` | `test_mode` / `live_mode` | DodoPayments environment (default: `test_mode`) |
+| `--dodo-brand-id` | string | Target DodoPayments brand ID |
 
 Helpful commands:
 ```
@@ -84,10 +84,10 @@ dodo-migrate lemonsqueezy --help
 
 ## Providers
 Detailed, provider-specific docs:
-- [Lemon Squeezy → Dodo Payments](./docs/lemonsqueezy/README.md)
+- [LemonSqueezy → DodoPayments](./docs/lemonsqueezy/README.md)
 
 ## Examples
-- Minimal migration from Lemon Squeezy (interactive):
+- Minimal migration from LemonSqueezy (interactive):
 ```
 dodo-migrate lemonsqueezy
 ```
@@ -115,4 +115,4 @@ npm uninstall -g dodo-migrate
 Interested in contributing? See [contributing.md](./contributing.md) for guidelines.
 
 ## License
-GPL-3.0 © Dodo Payments. See [LICENSE](./LICENSE).
+GPL-3.0 © DodoPayments. See [LICENSE](./LICENSE).
