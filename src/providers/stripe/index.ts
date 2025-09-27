@@ -125,33 +125,45 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
     console.log('\n[LOG] Starting products migration...');
     
     try {
-        const products = await stripe.products.list({ 
+        // Paginate through all products
+        const allProducts: Stripe.Product[] = [];
+        await stripe.products.list({
             limit: 100,
-            active: true 
+            active: true
+        }).autoPagingEach((product) => {
+            allProducts.push(product);
         });
 
-        if (products.data.length === 0) {
+        if (allProducts.length === 0) {
             console.log('[LOG] No active products found in Stripe');
             return;
         }
 
-        console.log(`[LOG] Found ${products.data.length} active products in Stripe`);
+        console.log(`[LOG] Found ${allProducts.length} active products in Stripe`);
 
         const ProductsToMigrate: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
 
-        for (const product of products.data) {
-            const prices = await stripe.prices.list({
+        for (const product of allProducts) {
+            // Paginate through all prices for this product
+            const allPrices: Stripe.Price[] = [];
+            await stripe.prices.list({
                 product: product.id,
                 active: true
+            }).autoPagingEach((price) => {
+                allPrices.push(price);
             });
 
-            if (prices.data.length === 0) {
+            if (allPrices.length === 0) {
                 console.log(`[LOG] Skipping product ${product.name} - no active prices found`);
                 continue;
             }
 
-            for (const price of prices.data) {
+            for (const price of allPrices) {
                 const isRecurring = price.type === 'recurring';
+                if (price.unit_amount == null) {
+                    console.log(`[LOG] Skipping price ${price.id} with null unit_amount (tiered/custom)`);
+                    continue;
+                }
                 
                 if (isRecurring) {
                     ProductsToMigrate.push({
@@ -238,49 +250,96 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
     console.log('\n[LOG] Starting coupons migration...');
     
     try {
-        const coupons = await stripe.coupons.list({ 
-            limit: 100 
+        // Paginate through all coupons
+        const allCoupons: Stripe.Coupon[] = [];
+        await stripe.coupons.list({
+            limit: 100
+        }).autoPagingEach((coupon) => {
+            allCoupons.push(coupon);
         });
 
-        if (coupons.data.length === 0) {
+        if (allCoupons.length === 0) {
             console.log('[LOG] No coupons found in Stripe');
             return;
         }
 
-        console.log(`[LOG] Found ${coupons.data.length} coupons in Stripe`);
+        console.log(`[LOG] Found ${allCoupons.length} coupons in Stripe`);
 
         const CouponsToMigrate: any[] = [];
 
-        for (const coupon of coupons.data) {
+        for (const coupon of allCoupons) {
             if (!coupon.valid) {
                 console.log(`[LOG] Skipping invalid coupon: ${coupon.id}`);
                 continue;
             }
 
-            let discountType: 'percentage' | 'fixed_amount';
-            let discountValue: number;
-
-            if (coupon.percent_off) {
-                discountType = 'percentage';
-                discountValue = coupon.percent_off;
-            } else if (coupon.amount_off) {
-                discountType = 'fixed_amount';
-                discountValue = coupon.amount_off;
-            } else {
-                console.log(`[LOG] Skipping coupon ${coupon.id} - no discount value found`);
-                continue;
-            }
-
-            CouponsToMigrate.push({
-                code: coupon.id,
-                name: coupon.name || coupon.id,
-                discount_type: discountType,
-                discount_value: discountValue,
-                currency: coupon.currency?.toUpperCase() || 'USD',
-                usage_limit: coupon.max_redemptions || null,
-                expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
-                brand_id: brand_id
+            // Fetch promotion codes for this coupon
+            const promotionCodes = await stripe.promotionCodes.list({
+                coupon: coupon.id,
+                limit: 100
             });
+
+            // If no promotion codes exist, create one using the coupon ID as the code
+            if (promotionCodes.data.length === 0) {
+                let discountType: 'percentage' | 'fixed_amount';
+                let discountValue: number;
+
+                if (coupon.percent_off) {
+                    discountType = 'percentage';
+                    discountValue = coupon.percent_off;
+                } else if (coupon.amount_off) {
+                    discountType = 'fixed_amount';
+                    discountValue = coupon.amount_off;
+                } else {
+                    console.log(`[LOG] Skipping coupon ${coupon.id} - no discount value found`);
+                    continue;
+                }
+
+                // Only set currency for fixed amount coupons
+                const currency = coupon.amount_off ? coupon.currency?.toUpperCase() : undefined;
+
+                CouponsToMigrate.push({
+                    code: coupon.id,
+                    name: coupon.name || coupon.id,
+                    discount_type: discountType,
+                    discount_value: discountValue,
+                    currency: currency,
+                    usage_limit: coupon.max_redemptions || null,
+                    expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
+                    brand_id: brand_id
+                });
+            } else {
+                // Process each promotion code
+                for (const promotionCode of promotionCodes.data) {
+                    let discountType: 'percentage' | 'fixed_amount';
+                    let discountValue: number;
+
+                    if (coupon.percent_off) {
+                        discountType = 'percentage';
+                        discountValue = coupon.percent_off;
+                    } else if (coupon.amount_off) {
+                        discountType = 'fixed_amount';
+                        discountValue = coupon.amount_off;
+                    } else {
+                        console.log(`[LOG] Skipping promotion code ${promotionCode.code} - no discount value found`);
+                        continue;
+                    }
+
+                    // Only set currency for fixed amount coupons
+                    const currency = coupon.amount_off ? coupon.currency?.toUpperCase() : undefined;
+
+                    CouponsToMigrate.push({
+                        code: promotionCode.code,
+                        name: coupon.name || coupon.id,
+                        discount_type: discountType,
+                        discount_value: discountValue,
+                        currency: currency,
+                        usage_limit: coupon.max_redemptions || null,
+                        expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
+                        brand_id: brand_id
+                    });
+                }
+            }
         }
 
         if (CouponsToMigrate.length === 0) {
@@ -328,43 +387,59 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
     console.log('\n[LOG] Starting customers migration...');
     
     try {
-        const customers = await stripe.customers.list({ 
-            limit: 100 
+        // Paginate through all customers
+        const allCustomers: Stripe.Customer[] = [];
+        await stripe.customers.list({
+            limit: 100
+        }).autoPagingEach((customer) => {
+            allCustomers.push(customer);
         });
 
-        if (customers.data.length === 0) {
+        if (allCustomers.length === 0) {
             console.log('[LOG] No customers found in Stripe');
             return;
         }
 
-        console.log(`[LOG] Found ${customers.data.length} customers in Stripe`);
+        console.log(`[LOG] Found ${allCustomers.length} customers in Stripe`);
 
         const CustomersToMigrate: any[] = [];
 
-        for (const customer of customers.data) {
+        for (const customer of allCustomers) {
             if (customer.deleted) {
                 console.log(`[LOG] Skipping deleted customer: ${customer.id}`);
                 continue;
             }
 
-            CustomersToMigrate.push({
-                email: customer.email || '',
-                name: customer.name || '',
-                phone: customer.phone || '',
-                address: {
+            // Clean up address fields - remove address object if all fields are empty
+                const address = {
                     line1: customer.address?.line1 || '',
                     line2: customer.address?.line2 || '',
                     city: customer.address?.city || '',
                     state: customer.address?.state || '',
                     postal_code: customer.address?.postal_code || '',
                     country: customer.address?.country || ''
-                },
-                brand_id: brand_id,
-                metadata: {
-                    stripe_customer_id: customer.id,
-                    migrated_from: 'stripe'
+                };
+
+                // Check if all address fields are empty or only whitespace
+                const isAddressEmpty = Object.values(address).every(field => !field || field.trim() === '');
+
+                const customerData: any = {
+                    email: customer.email || '',
+                    name: customer.name || '',
+                    phone: customer.phone || '',
+                    brand_id: brand_id,
+                    metadata: {
+                        stripe_customer_id: customer.id,
+                        migrated_from: 'stripe'
+                    }
+                };
+
+                // Only add address if it's not empty
+                if (!isAddressEmpty) {
+                    customerData.address = address;
                 }
-            });
+
+                CustomersToMigrate.push(customerData);
         }
 
         if (CustomersToMigrate.length === 0) {

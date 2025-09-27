@@ -232,7 +232,8 @@ export default {
                     code: discount.attributes.code,
                     type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
                     value: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount / 100,
-                    currency: discount.attributes.amount_type === 'fixed' ? 'USD' : undefined, // Default currency for fixed amounts
+                    // For fixed amount discounts, use the store currency
+                    currency: discount.attributes.amount_type === 'fixed' ? StoresData[discount.attributes.store_id]?.data.attributes.currency : undefined,
                     usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
                     expires_at: discount.attributes.expires_at,
                     brand_id: brand_id
