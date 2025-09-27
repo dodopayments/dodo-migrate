@@ -227,13 +227,33 @@ export default {
 
             // Process each discount
             for (let discount of validDiscounts) {
+                // Determine currency for fixed amount discounts, preferring the discount's own currency
+                let fixedCurrency: string | undefined = undefined;
+                if (discount.attributes.amount_type === 'fixed') {
+                    fixedCurrency = (discount as any).attributes.currency;
+                    if (!fixedCurrency) {
+                        // Fallback: use cached store currency or fetch and cache the store if not present
+                        if (!StoresData[discount.attributes.store_id]) {
+                            console.log(`[LOG] Fetching store data for store ID ${discount.attributes.store_id} to determine currency for fixed discount`);
+                            const FetchStoreData = await getStore(discount.attributes.store_id);
+                            if (FetchStoreData.error || FetchStoreData.statusCode !== 200) {
+                                console.log(`[ERROR] Failed to fetch store data for store ID ${discount.attributes.store_id}\n`, FetchStoreData.error);
+                                process.exit(1);
+                            }
+                            StoresData[discount.attributes.store_id] = FetchStoreData.data;
+                        } else {
+                            console.log(`[LOG] Using cached store data for store ID ${discount.attributes.store_id} to determine currency for fixed discount`);
+                        }
+                        fixedCurrency = StoresData[discount.attributes.store_id]?.data.attributes.currency as any;
+                    }
+                }
                 const discountData = {
                     name: discount.attributes.name,
                     code: discount.attributes.code,
                     type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
                     value: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount / 100,
-                    // For fixed amount discounts, use the store currency
-                    currency: discount.attributes.amount_type === 'fixed' ? StoresData[discount.attributes.store_id]?.data.attributes.currency : undefined,
+                    // For fixed amount discounts, prefer discount currency; fallback to store currency (cached or fetched above)
+                    currency: discount.attributes.amount_type === 'fixed' ? fixedCurrency : undefined,
                     usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
                     expires_at: discount.attributes.expires_at,
                     brand_id: brand_id
