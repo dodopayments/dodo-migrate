@@ -114,6 +114,10 @@ export default {
         // This will be the array of coupons to be created in Dodo Payments
         const Coupons: { data: any }[] = [];
 
+        // Track actual completion state for each migration branch
+        let completedProducts = false;
+        let completedCoupons = false;
+
         // Migrate products if selected
         if (migrationTypes.includes('products')) {
             console.log('\n[LOG] Starting products migration...');
@@ -200,6 +204,7 @@ export default {
                     }
                 }
                 console.log('\n[LOG] All products migrated successfully!');
+                completedProducts = true;
             } else {
                 console.log('[LOG] Products migration aborted by user');
             }
@@ -296,6 +301,7 @@ export default {
                         }
                     }
                     console.log('\n[LOG] All coupons migrated successfully!');
+                    completedCoupons = true;
                 } else {
                     console.log('[LOG] Coupons migration aborted by user');
                 }
@@ -306,8 +312,8 @@ export default {
 
         // Final completion message
         const completedMigrations: string[] = [];
-        if (migrationTypes.includes('products')) completedMigrations.push('products');
-        if (migrationTypes.includes('coupons')) completedMigrations.push('coupons');
+        if (completedProducts) completedMigrations.push('products');
+        if (completedCoupons) completedMigrations.push('coupons');
         
         if (completedMigrations.length > 0) {
             console.log(`\n[LOG] Migration completed for: ${completedMigrations.join(', ')}`);
