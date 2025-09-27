@@ -3,6 +3,12 @@ import { hideBin } from 'yargs/helpers';
 import yargs from 'yargs';
 
 import MigrateLemonSqueezy from './providers/lemonsqueezy';
+import MigrateStripe from './providers/stripe';
+import MigrateFastSpring from './providers/fastspring';
+import MigratePaddle from './providers/paddle';
+import MigrateRazorpay from './providers/razorpay';
+import MigrateGumroad from './providers/gumroad';
+import Migrate2Checkout from './providers/2checkout';
 
 // Silently check for the latest version of the package
 // Added a try catch block to ensure that any errors during the fetch process (example, NPM is down) do not crash the application
@@ -27,6 +33,12 @@ yargs(hideBin(process.argv))
     .alias('h', 'help')
     .version()
     .alias('v', 'version')
-    // Add other providers command files after this
+    // Provider command files
     .command(MigrateLemonSqueezy)
+    .command(MigrateStripe)
+    .command(MigrateFastSpring)
+    .command(MigratePaddle)
+    .command(MigrateRazorpay)
+    .command(MigrateGumroad)
+    .command(Migrate2Checkout)
     .argv;

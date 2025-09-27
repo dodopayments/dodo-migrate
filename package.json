@@ -6,8 +6,11 @@
   "dependencies": {
     "@inquirer/prompts": "^7.8.6",
     "@lemonsqueezy/lemonsqueezy.js": "^4.0.0",
+    "axios": "^1.12.2",
+    "bun": "^1.2.22",
     "commander": "^14.0.1",
     "dodopayments": "^2.1.0",
+    "stripe": "^18.5.0",
     "yargs": "^18.0.0"
   },
   "name": "dodo-migrate",
@@ -28,7 +31,9 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "^24.5.2",
-    "@types/yargs": "^17.0.33"
+    "@types/yargs": "^17.0.33",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
   },
   "bin": {
     "dodo-migrate": "./dist/index.js"
