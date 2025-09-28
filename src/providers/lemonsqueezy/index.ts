@@ -1,3 +1,4 @@
+
 import { listProducts, lemonSqueezySetup, getProduct, getStore, Store, listCustomers, listDiscounts } from '@lemonsqueezy/lemonsqueezy.js';
 import DodoPayments from 'dodopayments';
 import { input, select, confirm } from '@inquirer/prompts';
@@ -445,6 +446,121 @@ export default {
         } else {
             console.log('[LOG] Migration aborted by user');
             process.exit(0);
+        }
+
+        // -----------------------------
+        // Coupons (Discounts) Migration
+        // -----------------------------
+
+        // Helper to resolve a store's currency on-demand and cache it in StoresData
+        const resolveStoreCurrency = async (storeId?: string | number | null): Promise<string | undefined> => {
+            if (!storeId && storeId !== 0) return undefined;
+            const key = String(storeId);
+            if (!StoresData[key]) {
+                console.log(`[LOG] Fetching store data for store ID ${key} (for coupon currency)`);
+                const fetched = await getStore(Number(storeId));
+                if (fetched.error || fetched.statusCode !== 200) {
+                    console.log(`[ERROR] Failed to fetch store data for store ID ${key} while resolving coupon currency\n`, fetched.error);
+                    return undefined;
+                }
+                StoresData[key] = fetched.data;
+            }
+            return StoresData[key]?.data?.attributes?.currency as any;
+        };
+
+        // Fetch discounts (coupons)
+        console.log('\n[LOG] Fetching discounts (coupons) from Lemon Squeezy...');
+        const ListDiscounts = await listDiscounts();
+        if (ListDiscounts.error || ListDiscounts.statusCode !== 200) {
+            console.log('[ERROR] Failed to fetch discounts from Lemon Squeezy!\n', ListDiscounts.error);
+            process.exit(1);
+        }
+
+        const RawDiscounts: any[] = ListDiscounts.data?.data || [];
+        console.log(`[LOG] Found ${RawDiscounts.length} discounts in Lemon Squeezy`);
+
+        // Filter to valid/published discounts only
+        const PublishedDiscounts = RawDiscounts.filter((d: any) => {
+            const status = d?.attributes?.status || d?.attributes?.state;
+            return status === 'active' || status === 'published' || status === 'enabled';
+        });
+        console.log(`[LOG] Considering ${PublishedDiscounts.length} published/active discounts`);
+
+        // Map to internal shape and fix currency logic for fixed-amount discounts
+        const CouponsToMigrate = [] as any[];
+        for (const discount of PublishedDiscounts) {
+            const attrs = discount?.attributes || {};
+            const discountType: string = (attrs.discount_type || attrs.type || '').toString(); // 'percent' | 'amount' (naming may vary)
+            const isPercentage = discountType.includes('percent');
+            const isFixedAmount = !isPercentage; // default to fixed if not clearly percentage
+
+            let amountOff = 0;
+            let percentOff = 0;
+            let currency: string | undefined;
+
+            if (isPercentage) {
+                percentOff = Number(attrs.amount) || Number(attrs.percentage) || 0;
+            } else if (isFixedAmount) {
+                amountOff = Number(attrs.amount) || 0;
+                // FIX: Prefer discount.attributes.currency; fall back to fetching/caching store currency
+                currency = (attrs.currency as string) || undefined;
+                if (!currency) {
+                    const storeId = attrs.store_id || discount?.relationships?.store?.data?.id;
+                    currency = await resolveStoreCurrency(storeId);
+                }
+            }
+
+            // Skip discounts that don't have meaningful values
+            if (isPercentage && percentOff <= 0) continue;
+            if (isFixedAmount && amountOff <= 0) continue;
+
+            // Build a neutral representation (logging and potential future migration)
+            CouponsToMigrate.push({
+                name: attrs.name || attrs.code || 'Unnamed Discount',
+                code: attrs.code,
+                type: isPercentage ? 'percentage' : 'fixed',
+                percent_off: isPercentage ? percentOff : undefined,
+                amount_off: isFixedAmount ? amountOff : undefined,
+                currency: isFixedAmount ? currency : undefined,
+                usage_limit: attrs.usage_limit ?? attrs.max_uses ?? null,
+                expires_at: attrs.redeem_by || attrs.expires_at || null,
+            });
+        }
+
+        if (CouponsToMigrate.length === 0) {
+            console.log('[LOG] No eligible discounts (coupons) to migrate.');
+            return;
+        }
+
+        console.log('\n[LOG] These are the coupons to be migrated:');
+        CouponsToMigrate.forEach((c, index) => {
+            if (c.type === 'percentage') {
+                console.log(`${index + 1}. ${c.code || c.name} - ${c.percent_off}% off`);
+            } else {
+                console.log(`${index + 1}. ${c.code || c.name} - ${c.currency} ${(Number(c.amount_off) / 100).toFixed(2)} off`);
+            }
+        });
+
+        const migrateCoupons = await select({
+            message: 'Proceed to migrate these coupons to Dodo Payments?',
+            choices: [
+                { name: 'Yes', value: 'yes' },
+                { name: 'No', value: 'no' }
+            ],
+        });
+
+        if (migrateCoupons === 'yes') {
+            // NOTE: Implement actual coupon creation with Dodo Payments SDK when endpoint is available.
+            // For now, we just log the intent while ensuring currency resolution is correct.
+            for (const c of CouponsToMigrate) {
+                console.log();
+                console.log(`[LOG] Migrating coupon: ${c.code || c.name}`);
+                // Example (pseudo): await client.coupons.create({ ...c });
+                console.log('[LOG] Coupon migration simulated.');
+            }
+            console.log('\n[LOG] All coupons processed.');
+        } else {
+            console.log('[LOG] Coupon migration aborted by user');
         }
     }
 }

@@ -40,10 +40,6 @@ export default {
             message: 'Enter your Stripe Secret API Key (sk_...):',
             required: true
         });
-        const DODO_API_KEY = argv['dodo-api-key'] || await input({
-            message: 'Enter your Dodo Payments API Key:',
-            required: true
-        });
         const MODE = argv['mode'] || await select({
             message: 'Select Dodo Payments environment:',
             choices: [
@@ -150,7 +146,6 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
             for (const price of prices.data) {
                 const isRecurring = price.type === 'recurring';
-
                 if (isRecurring) {
                     const interval = price.recurring?.interval;
                     if (interval !== 'month' && interval !== 'year') {
@@ -238,10 +233,10 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
 async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting coupons migration...');
-
+    
     try {
-        const coupons = await stripe.coupons.list({
-            limit: 100
+        const coupons = await stripe.coupons.list({ 
+            limit: 100 
         });
 
         if (coupons.data.length === 0) {
@@ -329,9 +324,11 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting customers migration...');
 
+
     try {
         const customers = await stripe.customers.list({
             limit: 100
+
         });
 
         if (customers.data.length === 0) {
