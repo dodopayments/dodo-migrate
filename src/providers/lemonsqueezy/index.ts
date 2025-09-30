@@ -283,11 +283,17 @@ export default {
 
             // Fetching exisiting Dodo coupons to avoid duplicates would go here
             let existingCodes = new Set<string>();
-            try {
-                const existingPage = await client.discounts.list();
-                const items = (existingPage.items || []);
-                for (const discount of items){
-                    if (discount.code) existingCodes.add(discount.code.toUpperCase());
+             try {
+                let page = 0;
+                let hasMore = true;
+                while (hasMore) {
+                    const existingPage = await client.discounts.list({'page_number' : page});
+                    const items = (existingPage.items || []);
+                    for (const discount of items) {
+                        if (discount.code) existingCodes.add(discount.code.toUpperCase());
+                    }
+                    hasMore = existingPage.hasNextPage() || false;
+                    page++;
                 }
             } catch (error) {
                 console.log('[WARN] Could not list existing Dodo discounts; proceeding without de-duplication.');
@@ -320,13 +326,18 @@ export default {
                     continue;
                 }
 
+                let expiresAt : string | null = null;
+                if (c.expires_at) {
+                   const date = new Date(c.expires_at);
+                   expiresAt = !isNaN(date.getTime()) ? date.toISOString() : null;
+                }
                 const payload = {
                     type: 'percentage' as const,
                     amount: amountBP,
                     code: code || null,
                     name: c.name ?? null,
                     usage_limit: c.usage_limit ?? null,
-                    expires_at: c.expires_at ? new Date(c.expires_at).toISOString() : null
+                   expires_at: expiresAt
                 };
 
                 console.log(`[LOG] Migrating coupon: ${code || c.name} (${amountBP / 100}% off)`);
