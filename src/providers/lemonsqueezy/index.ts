@@ -280,15 +280,65 @@ export default {
         });
 
         if (migrateCoupons === 'yes') {
-            // NOTE: Implement actual coupon creation with Dodo Payments SDK when endpoint is available.
-            // For now, we just log the intent while ensuring currency resolution is correct.
+
+            // Fetching exisiting Dodo coupons to avoid duplicates would go here
+            let existingCodes = new Set<string>();
+            try {
+                const existingPage = await client.discounts.list();
+                const items = (existingPage.items || []);
+                for (const discount of items){
+                    if (discount.code) existingCodes.add(discount.code.toUpperCase());
+                }
+            } catch (error) {
+                console.log('[WARN] Could not list existing Dodo discounts; proceeding without de-duplication.');
+            }
+
             for (const c of CouponsToMigrate) {
                 console.log();
                 console.log(`[LOG] Migrating coupon: ${c.code || c.name}`);
-                // Example (pseudo): await client.coupons.create({ ...c });
-                console.log('[LOG] Coupon migration simulated.');
+                
+                // Only percentage discounts are supported as of now. 
+                if (c.type !== 'percentage'){
+                    console.log(`[WARN] Skipping coupon ${c.code || c.name} - only percentage discounts are supported in Dodo Payments at this time.`);
+                    continue ;
+                }
+                // Convert percent to basis points (e.g., 5.4% => 540).
+                let amountBP = Math.round(Number(c.percent_off) * 100);
+                if (!Number.isFinite(amountBP) || amountBP <= 0) {
+                    console.log(`[LOG] Skipping coupon (invalid percentage): ${c.code || c.name}`);
+                    continue;
+                }
+                // Optional clamp to 100% = 10000 bps.
+                if (amountBP > 10000) amountBP = 10000;
+
+                // Normalize/validate code: >= 3 chars or let API auto-generate.
+                let code = typeof c.code === 'string' ? c.code.trim() : '';
+                code = code.length >= 3 ? code.toUpperCase() : '';
+
+                if (code && existingCodes.has(code)) {
+                    console.log(`[LOG] Skipping coupon (already exists in Dodo): ${code}`);
+                    continue;
+                }
+
+                const payload = {
+                    type: 'percentage' as const,
+                    amount: amountBP,
+                    code: code || null,
+                    name: c.name ?? null,
+                    usage_limit: c.usage_limit ?? null,
+                    expires_at: c.expires_at ? new Date(c.expires_at).toISOString() : null
+                };
+
+                console.log(`[LOG] Migrating coupon: ${code || c.name} (${amountBP / 100}% off)`);
+                try {
+                    const created = await client.discounts.create(payload);
+                    console.log(`[LOG] Migration complete: ${created.name || created.code} (ID: ${created.discount_id})`);
+                    if (created.code) existingCodes.add(String(created.code).toUpperCase());
+                } catch (error: any) {
+                    console.log(`[ERROR] Failed to migrate coupon ${code || c.name}: ${error?.message || error}`);
+                }
             }
-            console.log('\n[LOG] All coupons processed.');
+            console.log('\n[LOG] Coupons migration completed!');
         } else {
             console.log('[LOG] Coupon migration aborted by user');
         }
