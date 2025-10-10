@@ -80,11 +80,12 @@ export default {
         if (!brand_id) {
             try {
                 const brands = await client.brands.list();
+                const brandsArray = (brands as any)?.data ?? (brands as any)?.items ?? [];
                 brand_id = await select({
                     message: 'Select your Dodo Payments brand:',
-                    choices: brands.items.map((brand) => ({
-                        name: brand.name || 'Unnamed Brand',
-                        value: brand.brand_id,
+                    choices: (Array.isArray(brandsArray) ? brandsArray : []).map((brand: any) => ({
+                        name: brand?.name || 'Unnamed Brand',
+                        value: brand?.brand_id,
                     })),
                 });
             } catch (e) {
