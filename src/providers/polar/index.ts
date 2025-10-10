@@ -164,25 +164,44 @@ function authHeaders(ctx: PolarContext): Record<string, string> {
 async function migrateProducts(ctx: PolarContext) {
     console.log('\n[LOG] Starting products migration from Polar...');
     try {
-        const resp = await fetch(`${ctx.baseUrl}/products/?limit=50`, {
-            method: 'GET',
-            headers: authHeaders(ctx)
-        } as any);
-
-        if (!resp.ok) {
-            const text = await resp.text();
-            console.log(`[WARN] Failed to list Polar products: HTTP ${resp.status} - ${text}`);
-            return;
+        // Paginated fetch for products
+        const pageSize = 50;
+        let page = 1;
+        const allProducts: any[] = [];
+        while (true) {
+            let attempts = 0;
+            let resp: any;
+            while (attempts < 3) {
+                resp = await fetch(`${ctx.baseUrl}/products/?limit=${pageSize}&page=${page}`, {
+                    method: 'GET',
+                    headers: authHeaders(ctx)
+                } as any);
+                if (resp.status === 429) {
+                    await new Promise(r => setTimeout(r, 1000 * (attempts + 1)));
+                    attempts++;
+                    continue;
+                }
+                break;
+            }
+            if (!resp?.ok) {
+                const text = await resp?.text?.() || '';
+                console.log(`[WARN] Failed to list Polar products (page ${page}): HTTP ${resp?.status} - ${text}`);
+                break;
+            }
+            const json: any = await resp.json().catch(() => ({}));
+            const items: any[] = json?.items || json?.data || [];
+            if (!items.length) break;
+            allProducts.push(...items);
+            if (items.length < pageSize) break; // likely last page
+            page++;
         }
-        const json: any = await resp.json().catch(() => ({}));
-        const products: any[] = json?.items || json?.data || [];
-        if (!products.length) {
+        if (!allProducts.length) {
             console.log('[LOG] No products found in Polar');
             return;
         }
 
         const ProductsToMigrate: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
-        for (const p of products) {
+        for (const p of allProducts) {
             // Resolve primary price from Polar product
             const priceObj = Array.isArray(p?.prices) && p.prices.length > 0 ? p.prices[0] : null;
             const name = p?.name || p?.title || 'Unnamed Product';
@@ -191,7 +210,8 @@ async function migrateProducts(ctx: PolarContext) {
             const unitAmount = Number(priceObj?.price_amount ?? p?.price_amount ?? p?.amount ?? p?.price ?? 0);
             // Interval is product-level per Polar model
             const interval = (p?.recurring_interval || '').toString().toLowerCase();
-            const isRecurring = interval === 'month' || interval === 'year' || p?.is_recurring === true;
+            const recurringIntervals = ['day','week','month','year'];
+            const isRecurring = recurringIntervals.includes(interval) || p?.is_recurring === true;
 
             if (isRecurring) {
                 ProductsToMigrate.push({
@@ -273,25 +293,44 @@ async function migrateProducts(ctx: PolarContext) {
 async function migrateCoupons(ctx: PolarContext) {
     console.log('\n[LOG] Starting coupons migration from Polar...');
     try {
-        const resp = await fetch(`${ctx.baseUrl}/discounts/?limit=50`, {
-            method: 'GET',
-            headers: authHeaders(ctx)
-        } as any);
-
-        if (!resp.ok) {
-            const text = await resp.text();
-            console.log(`[WARN] Failed to list Polar coupons: HTTP ${resp.status} - ${text}`);
-            return;
+        // Paginated fetch for discounts
+        const pageSize = 50;
+        let page = 1;
+        const allCoupons: any[] = [];
+        while (true) {
+            let attempts = 0;
+            let resp: any;
+            while (attempts < 3) {
+                resp = await fetch(`${ctx.baseUrl}/discounts/?limit=${pageSize}&page=${page}`, {
+                    method: 'GET',
+                    headers: authHeaders(ctx)
+                } as any);
+                if (resp.status === 429) {
+                    await new Promise(r => setTimeout(r, 1000 * (attempts + 1)));
+                    attempts++;
+                    continue;
+                }
+                break;
+            }
+            if (!resp?.ok) {
+                const text = await resp?.text?.() || '';
+                console.log(`[WARN] Failed to list Polar coupons (page ${page}): HTTP ${resp?.status} - ${text}`);
+                break;
+            }
+            const json: any = await resp.json().catch(() => ({}));
+            const items: any[] = json?.items || json?.data || [];
+            if (!items.length) break;
+            allCoupons.push(...items);
+            if (items.length < pageSize) break;
+            page++;
         }
-        const json: any = await resp.json().catch(() => ({}));
-        const coupons: any[] = json?.items || json?.data || [];
-        if (!coupons.length) {
+        if (!allCoupons.length) {
             console.log('[LOG] No coupons found in Polar');
             return;
         }
 
         const CouponsToMigrate: any[] = [];
-        for (const c of coupons) {
+        for (const c of allCoupons) {
             const discountType = (c?.type || c?.discount_type || '').toString().toLowerCase();
             const isPercentage = discountType === 'percentage' || discountType.includes('percent');
             // Percentage represented in basis_points (1/100th of a percent)
@@ -356,25 +395,44 @@ async function migrateCoupons(ctx: PolarContext) {
 async function migrateCustomers(ctx: PolarContext) {
     console.log('\n[LOG] Starting customers migration from Polar...');
     try {
-        const resp = await fetch(`${ctx.baseUrl}/customers/?limit=50`, {
-            method: 'GET',
-            headers: authHeaders(ctx)
-        } as any);
-
-        if (!resp.ok) {
-            const text = await resp.text();
-            console.log(`[WARN] Failed to list Polar customers: HTTP ${resp.status} - ${text}`);
-            return;
+        // Paginated fetch for customers
+        const pageSize = 50;
+        let page = 1;
+        const allCustomers: any[] = [];
+        while (true) {
+            let attempts = 0;
+            let resp: any;
+            while (attempts < 3) {
+                resp = await fetch(`${ctx.baseUrl}/customers/?limit=${pageSize}&page=${page}`, {
+                    method: 'GET',
+                    headers: authHeaders(ctx)
+                } as any);
+                if (resp.status === 429) {
+                    await new Promise(r => setTimeout(r, 1000 * (attempts + 1)));
+                    attempts++;
+                    continue;
+                }
+                break;
+            }
+            if (!resp?.ok) {
+                const text = await resp?.text?.() || '';
+                console.log(`[WARN] Failed to list Polar customers (page ${page}): HTTP ${resp?.status} - ${text}`);
+                break;
+            }
+            const json: any = await resp.json().catch(() => ({}));
+            const items: any[] = json?.items || json?.data || [];
+            if (!items.length) break;
+            allCustomers.push(...items);
+            if (items.length < pageSize) break;
+            page++;
         }
-        const json: any = await resp.json().catch(() => ({}));
-        const customers: any[] = json?.items || json?.data || [];
-        if (!customers.length) {
+        if (!allCustomers.length) {
             console.log('[LOG] No customers found in Polar');
             return;
         }
 
         const CustomersToMigrate: any[] = [];
-        for (const c of customers) {
+        for (const c of allCustomers) {
             CustomersToMigrate.push({
                 email: c?.email || '',
                 name: c?.name || '',
