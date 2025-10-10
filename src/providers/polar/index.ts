@@ -1,5 +1,5 @@
 import DodoPayments from 'dodopayments';
-import { input, select, checkbox } from '@inquirer/prompts';
+import { input, select, checkbox, password } from '@inquirer/prompts';
 
 // Polar Core API integration
 // - Base URLs: https://api.polar.sh/v1 | https://sandbox-api.polar.sh/v1
@@ -54,13 +54,15 @@ export default {
             });
     },
     handler: async (argv: any) => {
-        const PROVIDER_API_KEY = argv['provider-api-key'] || await input({
+        const PROVIDER_API_KEY = argv['provider-api-key'] || await password({
             message: 'Enter your Polar.sh API Key (Bearer):',
-            required: true
+            mask: true,
+            validate: (val: string) => (val && val.trim().length > 0) || 'API key is required'
         });
-        const DODO_API_KEY = argv['dodo-api-key'] || await input({
+        const DODO_API_KEY = argv['dodo-api-key'] || await password({
             message: 'Enter your Dodo Payments API Key:',
-            required: true
+            mask: true,
+            validate: (val: string) => (val && val.trim().length > 0) || 'API key is required'
         });
         const MODE = argv['mode'] || await select({
             message: 'Select Dodo Payments environment:',
