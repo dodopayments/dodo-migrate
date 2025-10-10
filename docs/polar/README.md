@@ -41,4 +41,12 @@ You can pass `--migrate-types products,coupons,customers` to select specific ent
  - Products, Coupons, Customers are fetched from `/products/`, `/discounts/`, `/customers/`.
  - Amounts are treated as minor units (cents). Logs display major units for readability.
  - Interval (monthly/yearly) is resolved at product level.
+ - Discounts: currently migrating only percentage discounts.
+   - Percentage discounts are sent to Dodo as `{ type: 'percentage', amount: <basis_points> }`.
+   - Flat/flat_per_unit discounts are detected but skipped with a warning until the target environment accepts them.
  - Confirmation prompts act as a dry-run gate; no global `--dry-run` flag yet.
+
+## Validation
+ - Products: one-time and subscription validated in sandbox. Subscription includes required fields (`payment_frequency_*` and `subscription_period_*`).
+ - Customers: validated in sandbox.
+ - Discounts: percentage validated; flat and per-unit are currently skipped with a log warning.

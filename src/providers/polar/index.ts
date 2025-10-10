@@ -1,10 +1,12 @@
 import DodoPayments from 'dodopayments';
 import { input, select, checkbox } from '@inquirer/prompts';
 
-// NOTE: Polar.sh API surface is being researched. This scaffold sets up
-// auth prompts, environment selection, brand selection, and stubs for
-// products/coupons/customers migration. Replace fetch calls and shapes
-// once Polar endpoints are finalized.
+// Polar Core API integration
+// - Base URLs: https://api.polar.sh/v1 | https://sandbox-api.polar.sh/v1
+// - Amounts: minor units (cents)
+// - Products: price from product.prices[0], recurring via product.recurring_interval
+// - Discounts: fetched from /discounts/ (temporarily migrating percentage only)
+// - Customers: fetched from /customers/
 
 export default {
     command: 'polar [arguments]',
@@ -111,9 +113,8 @@ export default {
         const BASE_URL: string = argv['polar-base-url'] || DEFAULT_BASE;
         console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')} [server=${SERVER}] [base=${BASE_URL}]`);
 
-        // Light connectivity check (GET /v1/health or similar once confirmed)
+        // Light connectivity check against products list
         try {
-            // Lightweight connectivity check against products list
             const ping = await fetch(`${BASE_URL}/products/`, {
                 method: 'GET',
                 headers: {
@@ -158,11 +159,10 @@ function authHeaders(ctx: PolarContext): Record<string, string> {
     };
 }
 
-// Stubs: replace with real Polar endpoints and mapping
+// Polar fetch + mapping
 async function migrateProducts(ctx: PolarContext) {
     console.log('\n[LOG] Starting products migration from Polar...');
     try {
-        // TODO: Replace with real endpoint once confirmed
         const resp = await fetch(`${ctx.baseUrl}/products/?limit=50`, {
             method: 'GET',
             headers: authHeaders(ctx)
@@ -272,7 +272,6 @@ async function migrateProducts(ctx: PolarContext) {
 async function migrateCoupons(ctx: PolarContext) {
     console.log('\n[LOG] Starting coupons migration from Polar...');
     try {
-        // TODO: Replace with real endpoint once confirmed
         const resp = await fetch(`${ctx.baseUrl}/discounts/?limit=50`, {
             method: 'GET',
             headers: authHeaders(ctx)
@@ -293,31 +292,37 @@ async function migrateCoupons(ctx: PolarContext) {
         const CouponsToMigrate: any[] = [];
         for (const c of coupons) {
             const discountType = (c?.type || c?.discount_type || '').toString().toLowerCase();
-            const isPercentage = discountType.includes('percent');
-            const percent = Number(c?.percent_off ?? c?.percentage ?? c?.value ?? 0);
-            // Minor units for fixed amount
-            const amount = Number(c?.amount_off ?? c?.amount ?? c?.value_amount ?? 0);
-            const currency = (c?.currency || c?.amount_currency || 'USD').toString().toUpperCase();
+            const isPercentage = discountType === 'percentage' || discountType.includes('percent');
+            // Percentage represented in basis_points (1/100th of a percent)
+            const basisPoints = Number(c?.basis_points ?? 0);
+            const percent = basisPoints > 0 ? (basisPoints / 100) : Number(c?.percent_off ?? c?.percentage ?? 0);
+            // Fixed amount in minor units, currency lower-case `usd` in Polar
+            const amount = Number(c?.amount ?? c?.amount_off ?? 0);
+            const currency = ((c?.currency || c?.amount_currency || 'usd') + '').toUpperCase();
 
             if (isPercentage && percent <= 0) continue;
-            if (!isPercentage && amount <= 0) continue;
+            if (!isPercentage) {
+                console.log(`[WARN] Skipping non-percentage discount ${c?.code || c?.name || c?.id}: Dodo environment currently accepts only 'percentage'.`);
+                continue;
+            }
 
+            // Dodo expects amount in basis points for percentage type
+            const bp = basisPoints > 0 ? basisPoints : Math.round(percent * 100);
             CouponsToMigrate.push({
-                code: c?.code || c?.id || c?.name,
-                name: c?.name || c?.code || 'Unnamed Coupon',
-                discount_type: isPercentage ? 'percentage' : 'fixed_amount',
-                discount_value: isPercentage ? percent : amount,
-                currency: isPercentage ? undefined : currency,
+                code: (c?.code || c?.id || c?.name || '').toString().toUpperCase(),
+                name: c?.name || c?.code || null,
+                type: 'percentage',
+                amount: bp,
                 brand_id: ctx.brand_id
             });
         }
 
         console.log('\n[LOG] These are the coupons to be migrated:');
         CouponsToMigrate.forEach((coupon, index) => {
-            const discount = coupon.discount_type === 'percentage'
-                ? `${coupon.discount_value}%`
-                : `${coupon.currency} ${(coupon.discount_value / 100).toFixed(2)}`;
-            console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${discount} discount`);
+            const discount = coupon.type === 'percentage'
+                ? `${(coupon.amount / 100).toFixed(2)}%`
+                : `USD ${(coupon.amount / 100).toFixed(2)}`;
+            console.log(`${index + 1}. ${coupon.name || 'Unnamed'} (${coupon.code}) - ${discount} discount`);
         });
 
         const proceed = await select({
@@ -350,7 +355,6 @@ async function migrateCoupons(ctx: PolarContext) {
 async function migrateCustomers(ctx: PolarContext) {
     console.log('\n[LOG] Starting customers migration from Polar...');
     try {
-        // TODO: Replace with real endpoint once confirmed
         const resp = await fetch(`${ctx.baseUrl}/customers/?limit=50`, {
             method: 'GET',
             headers: authHeaders(ctx)
