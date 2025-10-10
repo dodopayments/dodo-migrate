@@ -226,11 +226,35 @@ async function migrateProducts(ctx: PolarContext) {
                             discount: 0,
                             purchasing_power_parity: false,
                             type: 'recurring_price',
-                            billing_period: interval === 'month' ? 'monthly' : 'yearly',
+                            billing_period: ((): 'daily' | 'weekly' | 'monthly' | 'yearly' => {
+                                switch (interval) {
+                                    case 'day': return 'daily';
+                                    case 'week': return 'weekly';
+                                    case 'month': return 'monthly';
+                                    case 'year': return 'yearly';
+                                    default: return 'monthly';
+                                }
+                            })(),
                             payment_frequency_count: 1,
-                            payment_frequency_interval: interval === 'month' ? 'Month' : 'Year',
+                            payment_frequency_interval: ((): 'Day' | 'Week' | 'Month' | 'Year' => {
+                                switch (interval) {
+                                    case 'day': return 'Day';
+                                    case 'week': return 'Week';
+                                    case 'month': return 'Month';
+                                    case 'year': return 'Year';
+                                    default: return 'Month';
+                                }
+                            })(),
                             subscription_period_count: 1,
-                            subscription_period_interval: interval === 'month' ? 'Month' : 'Year'
+                            subscription_period_interval: ((): 'Day' | 'Week' | 'Month' | 'Year' => {
+                                switch (interval) {
+                                    case 'day': return 'Day';
+                                    case 'week': return 'Week';
+                                    case 'month': return 'Month';
+                                    case 'year': return 'Year';
+                                    default: return 'Month';
+                                }
+                            })()
                         },
                         brand_id: ctx.brand_id
                     }
@@ -335,19 +359,21 @@ async function migrateCoupons(ctx: PolarContext) {
             const isPercentage = discountType === 'percentage' || discountType.includes('percent');
             // Percentage represented in basis_points (1/100th of a percent)
             const basisPoints = Number(c?.basis_points ?? 0);
-            const percent = basisPoints > 0 ? (basisPoints / 100) : Number(c?.percent_off ?? c?.percentage ?? 0);
             // Fixed amount in minor units, currency lower-case `usd` in Polar
             const amount = Number(c?.amount ?? c?.amount_off ?? 0);
             const currency = ((c?.currency || c?.amount_currency || 'usd') + '').toUpperCase();
 
-            if (isPercentage && percent <= 0) continue;
+            if (isPercentage && basisPoints <= 0) {
+                console.log(`[WARN] Skipping percentage discount ${c?.code || c?.name || c?.id}: missing or non-positive basis_points.`);
+                continue;
+            }
             if (!isPercentage) {
                 console.log(`[WARN] Skipping non-percentage discount ${c?.code || c?.name || c?.id}: Dodo environment currently accepts only 'percentage'.`);
                 continue;
             }
 
             // Dodo expects amount in basis points for percentage type
-            const bp = basisPoints > 0 ? basisPoints : Math.round(percent * 100);
+            const bp = basisPoints;
             CouponsToMigrate.push({
                 code: (c?.code || c?.id || c?.name || '').toString().toUpperCase(),
                 name: c?.name || c?.code || null,
