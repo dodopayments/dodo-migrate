@@ -38,6 +38,13 @@ export default {
                 type: 'string',
                 demandOption: false
             })
+            .option('server', {
+                describe: 'Polar API server: production | sandbox',
+                type: 'string',
+                choices: ['production', 'sandbox'],
+                default: 'production',
+                demandOption: false
+            })
             .option('polar-base-url', {
                 describe: 'Override Polar API base URL (advanced)',
                 type: 'string',
@@ -99,12 +106,15 @@ export default {
             });
         }
 
-        const BASE_URL: string = argv['polar-base-url'] || 'https://api.polar.sh';
-        console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')} [polar-base-url=${BASE_URL}]`);
+        const SERVER: 'production' | 'sandbox' = argv['server'] || 'production';
+        const DEFAULT_BASE = SERVER === 'sandbox' ? 'https://sandbox-api.polar.sh/v1' : 'https://api.polar.sh/v1';
+        const BASE_URL: string = argv['polar-base-url'] || DEFAULT_BASE;
+        console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')} [server=${SERVER}] [base=${BASE_URL}]`);
 
         // Light connectivity check (GET /v1/health or similar once confirmed)
         try {
-            const ping = await fetch(`${BASE_URL}/v1`, {
+            // Lightweight connectivity check against products list
+            const ping = await fetch(`${BASE_URL}/products/`, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${PROVIDER_API_KEY}`,
@@ -153,7 +163,7 @@ async function migrateProducts(ctx: PolarContext) {
     console.log('\n[LOG] Starting products migration from Polar...');
     try {
         // TODO: Replace with real endpoint once confirmed
-        const resp = await fetch(`${ctx.baseUrl}/v1/products?limit=50`, {
+        const resp = await fetch(`${ctx.baseUrl}/products/?limit=50`, {
             method: 'GET',
             headers: authHeaders(ctx)
         } as any);
@@ -164,7 +174,7 @@ async function migrateProducts(ctx: PolarContext) {
             return;
         }
         const json: any = await resp.json().catch(() => ({}));
-        const products: any[] = json?.data || json?.items || [];
+        const products: any[] = json?.items || json?.data || [];
         if (!products.length) {
             console.log('[LOG] No products found in Polar');
             return;
@@ -174,9 +184,11 @@ async function migrateProducts(ctx: PolarContext) {
         for (const p of products) {
             // Heuristic placeholders; adjust once Polar schema is known
             const name = p?.name || p?.title || 'Unnamed Product';
-            const currency = (p?.currency || 'USD').toString().toUpperCase();
-            const unitAmount = Number(p?.price || p?.amount || 0); // assume minor units if provided; adjust as needed
-            const interval = (p?.interval || p?.billing_interval || '').toString().toLowerCase();
+            const currency = (p?.currency || p?.price_currency || 'USD').toString().toUpperCase();
+            // Amounts: Polar uses minor units (cents). Prefer price_amount/amount; fall back to price if already minor.
+            const unitAmount = Number(p?.price_amount ?? p?.amount ?? p?.price ?? 0);
+            // Interval now lives on product (per Polar changelog). Probe multiple field names safely.
+            const interval = (p?.recurring_interval || p?.interval || p?.billing_interval || '').toString().toLowerCase();
             const isRecurring = interval === 'month' || interval === 'year';
 
             if (isRecurring) {
@@ -219,7 +231,7 @@ async function migrateProducts(ctx: PolarContext) {
 
         console.log('\n[LOG] These are the products to be migrated:');
         ProductsToMigrate.forEach((product, index) => {
-            const price = product.data.price.price / 100;
+            const price = product.data.price.price / 100; // display in major units only for logs
             const type = product.type === 'one_time_product' ? 'One Time' : 'Subscription';
             const billing = product.type === 'subscription_product' ? ` (${product.data.price.billing_period})` : '';
             console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${price.toFixed(2)} (${type}${billing})`);
@@ -256,7 +268,7 @@ async function migrateCoupons(ctx: PolarContext) {
     console.log('\n[LOG] Starting coupons migration from Polar...');
     try {
         // TODO: Replace with real endpoint once confirmed
-        const resp = await fetch(`${ctx.baseUrl}/v1/coupons?limit=50`, {
+        const resp = await fetch(`${ctx.baseUrl}/discounts/?limit=50`, {
             method: 'GET',
             headers: authHeaders(ctx)
         } as any);
@@ -267,7 +279,7 @@ async function migrateCoupons(ctx: PolarContext) {
             return;
         }
         const json: any = await resp.json().catch(() => ({}));
-        const coupons: any[] = json?.data || json?.items || [];
+        const coupons: any[] = json?.items || json?.data || [];
         if (!coupons.length) {
             console.log('[LOG] No coupons found in Polar');
             return;
@@ -277,9 +289,10 @@ async function migrateCoupons(ctx: PolarContext) {
         for (const c of coupons) {
             const discountType = (c?.type || c?.discount_type || '').toString().toLowerCase();
             const isPercentage = discountType.includes('percent');
-            const percent = Number(c?.percent_off || c?.percentage || 0);
-            const amount = Number(c?.amount_off || c?.amount || 0);
-            const currency = (c?.currency || 'USD').toString().toUpperCase();
+            const percent = Number(c?.percent_off ?? c?.percentage ?? c?.value ?? 0);
+            // Minor units for fixed amount
+            const amount = Number(c?.amount_off ?? c?.amount ?? c?.value_amount ?? 0);
+            const currency = (c?.currency || c?.amount_currency || 'USD').toString().toUpperCase();
 
             if (isPercentage && percent <= 0) continue;
             if (!isPercentage && amount <= 0) continue;
@@ -333,7 +346,7 @@ async function migrateCustomers(ctx: PolarContext) {
     console.log('\n[LOG] Starting customers migration from Polar...');
     try {
         // TODO: Replace with real endpoint once confirmed
-        const resp = await fetch(`${ctx.baseUrl}/v1/customers?limit=50`, {
+        const resp = await fetch(`${ctx.baseUrl}/customers/?limit=50`, {
             method: 'GET',
             headers: authHeaders(ctx)
         } as any);
@@ -344,7 +357,7 @@ async function migrateCustomers(ctx: PolarContext) {
             return;
         }
         const json: any = await resp.json().catch(() => ({}));
-        const customers: any[] = json?.data || json?.items || [];
+        const customers: any[] = json?.items || json?.data || [];
         if (!customers.length) {
             console.log('[LOG] No customers found in Polar');
             return;
