@@ -182,14 +182,15 @@ async function migrateProducts(ctx: PolarContext) {
 
         const ProductsToMigrate: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
         for (const p of products) {
-            // Heuristic placeholders; adjust once Polar schema is known
+            // Resolve primary price from Polar product
+            const priceObj = Array.isArray(p?.prices) && p.prices.length > 0 ? p.prices[0] : null;
             const name = p?.name || p?.title || 'Unnamed Product';
-            const currency = (p?.currency || p?.price_currency || 'USD').toString().toUpperCase();
-            // Amounts: Polar uses minor units (cents). Prefer price_amount/amount; fall back to price if already minor.
-            const unitAmount = Number(p?.price_amount ?? p?.amount ?? p?.price ?? 0);
-            // Interval now lives on product (per Polar changelog). Probe multiple field names safely.
-            const interval = (p?.recurring_interval || p?.interval || p?.billing_interval || '').toString().toLowerCase();
-            const isRecurring = interval === 'month' || interval === 'year';
+            const currency = ((priceObj?.price_currency || p?.price_currency || p?.currency || 'usd') + '').toUpperCase();
+            // Amounts are in minor units (cents)
+            const unitAmount = Number(priceObj?.price_amount ?? p?.price_amount ?? p?.amount ?? p?.price ?? 0);
+            // Interval is product-level per Polar model
+            const interval = (p?.recurring_interval || '').toString().toLowerCase();
+            const isRecurring = interval === 'month' || interval === 'year' || p?.is_recurring === true;
 
             if (isRecurring) {
                 ProductsToMigrate.push({
@@ -204,7 +205,11 @@ async function migrateProducts(ctx: PolarContext) {
                             discount: 0,
                             purchasing_power_parity: false,
                             type: 'recurring_price',
-                            billing_period: interval === 'month' ? 'monthly' : 'yearly'
+                            billing_period: interval === 'month' ? 'monthly' : 'yearly',
+                            payment_frequency_count: 1,
+                            payment_frequency_interval: interval === 'month' ? 'Month' : 'Year',
+                            subscription_period_count: 1,
+                            subscription_period_interval: interval === 'month' ? 'Month' : 'Year'
                         },
                         brand_id: ctx.brand_id
                     }
