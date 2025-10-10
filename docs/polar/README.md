@@ -2,15 +2,30 @@
 
 This provider helps migrate from Polar.sh to Dodo Payments.
 
-Status: scaffolded. Endpoints and mappings will be updated as Polar's API surface is confirmed.
+Status: wired to Polar Core API.
+
+## Base URLs
+- Production: `https://api.polar.sh/v1`
+- Sandbox: `https://sandbox-api.polar.sh/v1`
+
+Use `--server production|sandbox` to switch, or override with `--polar-base-url`.
 
 ## Usage
 
 ```bash
+# Production
 dodo-migrate polar \
-  --provider-api-key "<POLAR_BEARER_TOKEN>" \
+  --provider-api-key "<POLAR_OAT>" \
   --dodo-api-key "<DODO_API_KEY>" \
-  --mode test_mode
+  --mode test_mode \
+  --server production
+
+# Sandbox
+dodo-migrate polar \
+  --provider-api-key "<POLAR_OAT_SANDBOX>" \
+  --dodo-api-key "<DODO_API_KEY>" \
+  --mode test_mode \
+  --server sandbox
 ```
 
 You can pass `--migrate-types products,coupons,customers` to select specific entities.
@@ -20,8 +35,10 @@ You can pass `--migrate-types products,coupons,customers` to select specific ent
 - dodo-api-key: Dodo Payments API key
 - dodo-brand-id: Optionally specify brand; otherwise you'll be prompted
 - polar-base-url: Override Polar API base if needed (default: https://api.polar.sh)
+ - server: `production` or `sandbox` (sets base automatically)
 
 ## Notes
-- Products, Coupons, Customers are currently implemented as best-effort placeholders.
-- Currency, interval and amount fields may need adjustments once Polar schemas are finalized.
-- Dry-run prompts are included to preview items before creation in Dodo Payments.
+ - Products, Coupons, Customers are fetched from `/products/`, `/discounts/`, `/customers/`.
+ - Amounts are treated as minor units (cents). Logs display major units for readability.
+ - Interval (monthly/yearly) is resolved at product level.
+ - Confirmation prompts act as a dry-run gate; no global `--dry-run` flag yet.
