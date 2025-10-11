@@ -170,7 +170,8 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                                 discount: 0,
                                 purchasing_power_parity: false,
                                 type: 'recurring_price',
-                                billing_period: interval === 'month' ? 'monthly' : 'yearly'
+                                billing_period: interval === 'month' ? 'monthly' : 'yearly',
+                                payment_frequency_count: 1
                             },
                             brand_id: brand_id
                         }
@@ -275,11 +276,19 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                 continue;
             }
 
+            // Skip fixed amount coupons for now as Dodo Payments may only support percentage discounts
+            if (discountType === 'fixed_amount') {
+                console.log(`[LOG] Skipping fixed amount coupon ${coupon.id} - Dodo Payments may only support percentage discounts`);
+                continue;
+            }
+
             CouponsToMigrate.push({
                 code: coupon.id,
                 name: coupon.name || coupon.id,
-                discount_type: discountType,
+                type: 'percentage',
+                discount_type: 'percentage',
                 discount_value: discountValue,
+                amount: 1, 
                 currency: coupon.currency?.toUpperCase() || 'USD',
                 usage_limit: coupon.max_redemptions || null,
                 expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
@@ -315,7 +324,11 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                     const createdCoupon = await client.discounts.create(coupon);
                     console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
                 } catch (error: any) {
-                    console.log(`[ERROR] Failed to migrate coupon: ${coupon.name} - ${error.message}`);
+                    if (error.message?.includes('Discount Code already exists')) {
+                        console.log(`[LOG] Coupon "${coupon.name}" (${coupon.code}) already exists in Dodo Payments - skipping`);
+                    } else {
+                        console.log(`[ERROR] Failed to migrate coupon: ${coupon.name} - ${error.message}`);
+                    }
                 }
             }
             console.log('[LOG] Coupons migration completed!');
