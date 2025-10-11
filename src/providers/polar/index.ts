@@ -378,7 +378,7 @@ async function migrateCoupons(ctx: PolarContext) {
             const bp = basisPoints;
             CouponsToMigrate.push({
                 code: (c?.code || c?.id || c?.name || '').toString().toUpperCase(),
-                name: c?.name || c?.code || null,
+                ...(c?.name || c?.code ? { name: c?.name || c?.code } : {}),
                 type: 'percentage',
                 amount: bp,
                 brand_id: ctx.brand_id
