@@ -171,7 +171,7 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                                 purchasing_power_parity: false,
                                 type: 'recurring_price',
                                 billing_period: interval === 'month' ? 'monthly' : 'yearly',
-                                payment_frequency_count: 1
+                                payment_frequency_count: price.recurring?.interval_count ? Number(price.recurring.interval_count) : 1
                             },
                             brand_id: brand_id
                         }
@@ -276,9 +276,11 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                 continue;
             }
 
-            // Skip fixed amount coupons for now as Dodo Payments may only support percentage discounts
+            // Note: Dodo Payments currently only supports percentage-based discounts
+            // Fixed amount coupons will be skipped with a clear message to the user
             if (discountType === 'fixed_amount') {
-                console.log(`[LOG] Skipping fixed amount coupon ${coupon.id} - Dodo Payments may only support percentage discounts`);
+                console.log(`[LOG] Skipping fixed amount coupon "${coupon.name || coupon.id}" (${coupon.id}) - Dodo Payments does not support fixed-amount discounts`);
+                console.log(`[LOG] Consider recreating this as a percentage discount in Dodo Payments manually`);
                 continue;
             }
 
@@ -288,7 +290,7 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                 type: 'percentage',
                 discount_type: 'percentage',
                 discount_value: discountValue,
-                amount: 1, 
+                amount: Math.round(discountValue * 100), // Convert percentage to basis points (e.g., 15% = 1500 basis points) 
                 currency: coupon.currency?.toUpperCase() || 'USD',
                 usage_limit: coupon.max_redemptions || null,
                 expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
