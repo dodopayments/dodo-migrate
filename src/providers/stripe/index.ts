@@ -288,13 +288,11 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                 code: coupon.id,
                 name: coupon.name || coupon.id,
                 type: 'percentage',
-                discount_type: 'percentage',
-                discount_value: discountValue,
                 amount: Math.round(discountValue * 100), // Convert percentage to basis points (e.g., 15% = 1500 basis points) 
-                currency: coupon.currency?.toUpperCase() || 'USD',
                 usage_limit: coupon.max_redemptions || null,
                 expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
-                brand_id: brand_id
+                brand_id: brand_id,
+                displayValue: discountValue // For display purposes in the UI
             });
         }
 
@@ -305,10 +303,7 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
         console.log('\n[LOG] These are the coupons to be migrated:');
         CouponsToMigrate.forEach((coupon, index) => {
-            const discount = coupon.discount_type === 'percentage' 
-                ? `${coupon.discount_value}%` 
-                : `${coupon.currency} ${(coupon.discount_value / 100).toFixed(2)}`;
-            console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${discount} discount`);
+            console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${coupon.displayValue}% discount`);
         });
 
         const migrateCoupons = await select({
