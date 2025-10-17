@@ -36,13 +36,9 @@ export default {
             });
     },
     handler: async (argv: any) => {
-        const PROVIDER_API_KEY = argv['provider-api-key'] || await input({ 
-            message: 'Enter your Stripe Secret API Key (sk_...):', 
-            required: true 
-        });
-        const DODO_API_KEY = argv['dodo-api-key'] || await input({ 
-            message: 'Enter your Dodo Payments API Key:', 
-            required: true 
+        const PROVIDER_API_KEY = argv['provider-api-key'] || await input({
+            message: 'Enter your Stripe Secret API Key (sk_...):',
+            required: true
         });
         const MODE = argv['mode'] || await select({
             message: 'Select Dodo Payments environment:',
@@ -121,11 +117,11 @@ export default {
 
 async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting products migration...');
-    
+
     try {
-        const products = await stripe.products.list({ 
+        const products = await stripe.products.list({
             limit: 100,
-            active: true 
+            active: true
         });
 
         if (products.data.length === 0) {
@@ -150,7 +146,6 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
             for (const price of prices.data) {
                 const isRecurring = price.type === 'recurring';
-                
                 if (isRecurring) {
                     const interval = price.recurring?.interval;
                     if (interval !== 'month' && interval !== 'year') {
@@ -294,8 +289,8 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
         console.log('\n[LOG] These are the coupons to be migrated:');
         CouponsToMigrate.forEach((coupon, index) => {
-            const discount = coupon.discount_type === 'percentage' 
-                ? `${coupon.discount_value}%` 
+            const discount = coupon.discount_type === 'percentage'
+                ? `${coupon.discount_value}%`
                 : `${coupon.currency} ${(coupon.discount_value / 100).toFixed(2)}`;
             console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${discount} discount`);
         });
@@ -330,10 +325,12 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
 async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting customers migration...');
-    
+
+
     try {
-        const customers = await stripe.customers.list({ 
-            limit: 100 
+        const customers = await stripe.customers.list({
+            limit: 100
+
         });
 
         if (customers.data.length === 0) {

@@ -15,11 +15,12 @@ Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate y
 
 **Supported providers:**
 - [x] Lemon Squeezy
+- [x] Gumroad
+- [x] 2Checkout
+- [x] FastSpring
 - [x] Stripe
-- [ ] Gumroad
-- [ ] 2Checkout
-- [ ] FastSpring
-- [ ] Paddle
+- [x] Paddle
+- [x] Razorpay
 
 **Supported models:**
 - [x] Products
@@ -27,109 +28,43 @@ Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate y
 - [x] Customers
 
 ## Contents
-- [Features](#features)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [CLI reference](#cli-reference)
-- [Providers](#providers)
-- [Examples](#examples)
-- [Update / Uninstall](#update--uninstall)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
+- [Dodo Migrate](#dodo-migrate)
+  - [Contents](#contents)
+  - [Features](#features)
+  - [Requirements](#requirements)
+  - [Install](#install)
+  - [Quick start](#quick-start)
+  - [CLI reference](#cli-reference)
+  - [Providers](#providers)
+    - [Stripe](#stripe)
+    - [Lemon Squeezy](#lemon-squeezy)
+    - [Gumroad](#gumroad)
+    - [Paddle](#paddle)
+    - [Razorpay](#razorpay)
+    - [2Checkout](#2checkout)
+    - [FastSpring](#fastspring)
+  - [Examples](#examples)
+    - [Interactive Migration (Recommended)](#interactive-migration-recommended)
+    - [Non-Interactive Migration](#non-interactive-migration)
+  - [Update / Uninstall](#update--uninstall)
+  - [Roadmap](#roadmap)
+  - [Contributing](#contributing)
+  - [License](#license)
 
 ## Features
 - Safe, confirm-before-write migration flow
 - Interactive prompts with sensible defaults
 - Works with Dodo Payments test or live environments
 - Incremental, repeatable runs
+- Multi-provider support with unified interface
+- Selective data migration (choose what to migrate)
+- Connection validation before migration
+- Detailed progress logging and error handling
 
 ## Requirements
 - Node.js ≥ 18 (for native `fetch` used by the CLI)
 - Provider API key and Dodo Payments API key
 
 ## Install
-```
+```bash
 npm i -g dodo-migrate
-```
-
-## Quick start
-Migrate from Lemon Squeezy to Dodo Payments:
-```
-dodo-migrate lemonsqueezy
-```
-Migrate from Stripe to Dodo Payments:
-```
-dodo-migrate stripe
-```
-You'll be prompted for any missing inputs (API keys, brand selection, environment).
-
-## CLI reference
-Global usage:
-```
-dodo-migrate <provider> [options]
-```
-
-Options (all optional; interactive prompts will fill in when omitted):
-
-| option | values | description |
-| --- | --- | --- |
-| `--provider-api-key` | string | Provider API key (e.g., Lemon Squeezy) |
-| `--dodo-api-key` | string | Dodo Payments API key |
-| `--mode` | `test_mode` / `live_mode` | Dodo Payments environment (default: `test_mode`) |
-| `--dodo-brand-id` | string | Target Dodo Payments brand ID |
-
-Helpful commands:
-```
-dodo-migrate --help
-dodo-migrate lemonsqueezy --help
-```
-
-## Providers
-Detailed, provider-specific docs:
-- [Lemon Squeezy → Dodo Payments](./docs/lemonsqueezy/README.md)
-- [Stripe → Dodo Payments](./docs/stripe/README.md)
-
-## Examples
-- Minimal migration from Lemon Squeezy (interactive):
-```
-dodo-migrate lemonsqueezy
-```
-
-- Minimal migration from Stripe (interactive):
-```
-dodo-migrate stripe
-```
-
-- Non-interactive run (all flags provided):
-```
-dodo-migrate lemonsqueezy \
-  --provider-api-key=lsq_XXXXXXXXXXXXXXXX \
-  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
-  --mode=test_mode \
-  --dodo-brand-id=brand_XXXXXX
-
-dodo-migrate stripe \
-  --provider-api-key=sk_test_XXXXXXXXXXXXXXXX \
-  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
-  --mode=test_mode \
-  --dodo-brand-id=brand_XXXXXX \
-  --migrate-types=products,coupons
-```
-
-## Update / Uninstall
-```
-npm update -g dodo-migrate
-npm uninstall -g dodo-migrate
-```
-
-## Roadmap
-- Add more providers
-- Add more data options per provider
-
-## Contributing
-Interested in contributing? See [contributing.md](./contributing.md) for guidelines.
-
-## License
-GPL-3.0 © Dodo Payments. See [LICENSE](./LICENSE).
