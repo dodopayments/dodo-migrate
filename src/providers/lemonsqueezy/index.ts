@@ -1,4 +1,4 @@
-import { listProducts, listDiscounts, lemonSqueezySetup, getProduct, getStore, Store } from '@lemonsqueezy/lemonsqueezy.js';
+import { listProducts, listDiscounts, lemonSqueezySetup, getStore, Store, listPrices } from '@lemonsqueezy/lemonsqueezy.js';
 import DodoPayments from 'dodopayments';
 import { input, select } from '@inquirer/prompts';
 
@@ -36,6 +36,7 @@ export default {
     handler: async (argv: any) => {
         // Store the details of the API keys and mode, and prompt the user if they fail to provide it in the CLI
         const PROVIDER_API_KEY = argv['provider-api-key'] || await input({ message: 'Enter your Lemon Squeezy API Key:', required: true });
+
         const DODO_API_KEY = argv['dodo-api-key'] || await input({ message: 'Enter your Dodo Payments API Key:', required: true });
         const MODE = argv['mode'] || await select({
             message: 'Select Dodo Payments environment:',
@@ -89,7 +90,27 @@ export default {
         const StoresData: Record<string, Store> = {};
 
         // This will be the array of products to be created in Dodo Payments
-        const Products: { type: 'one_time_product', data: any }[] = [];
+        // Supports both one-time and subscription products
+        const Products: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
+
+        // Helper function to convert Lemon Squeezy pricing to cents
+        const convertToCents = (unitPrice: number | undefined, unitPriceDecimal: string | undefined): number => {
+            // Prefer unit_price if present and valid
+            if (unitPrice && unitPrice > 0) {
+                return Math.round(unitPrice);
+            }
+            
+            // Fall back to unit_price_decimal (string with decimal value)
+            if (unitPriceDecimal) {
+                const decimalValue = parseFloat(unitPriceDecimal);
+                if (!isNaN(decimalValue) && decimalValue > 0) {
+                    // Convert decimal to cents (multiply by 100 and round)
+                    return Math.round(decimalValue * 100);
+                }
+            }
+            
+            return 0; // Invalid or missing pricing
+        };
 
         // List the products from the Lemon Squeezy SDK
         const ListProducts = await listProducts();
@@ -97,55 +118,217 @@ export default {
             console.log("[ERROR] Failed to fetch products from Lemon Squeezy!\n", ListProducts.error);
             process.exit(1);
         }
-
-        console.log('[LOG] Found ' + ListProducts.data.data.length + ' products in Lemon Squeezy');
+        const RawProducts: any[] = ListProducts.data.data;
+        console.log('[LOG] Found ' + RawProducts.length + ' products in Lemon Squeezy');
 
         // Iterate the products
-        for (let product of ListProducts.data.data) {
+        for (let product of RawProducts) {
             // This will contain the store information of the current product. This information is crucial to determine the currency of the product.
             // Do not confuse this with StoresData which is the cache of all stores
             let StoreData: null | Store = null;
+            // Determine price currency for the current product
+            let priceCurrency: string | undefined;
 
             // If the store data is not already fetched, fetch it
             if (!StoresData[product.attributes.store_id]) {
                 console.log(`[LOG] Fetching store data for store ID ${product.attributes.store_id}`);
-
-                // Fetch the store data from Lemon Squeezy
                 const FetchStoreData = await getStore(product.attributes.store_id);
                 if (FetchStoreData.error || FetchStoreData.statusCode !== 200) {
                     console.log(`[ERROR] Failed to fetch store data for store ID ${product.attributes.store_id}\n`, FetchStoreData.error);
                     process.exit(1);
                 }
-                // If the store data is fetched and cached, use it
                 StoresData[product.attributes.store_id] = FetchStoreData.data;
-                // Store the currently fetched data in the local StoreData variable to access the current store information below
                 StoreData = FetchStoreData.data;
             } else {
                 console.log(`[LOG] Using cached store data for store ID ${product.attributes.store_id}`);
                 StoreData = StoresData[product.attributes.store_id];
             }
+            priceCurrency = StoreData.data.attributes.currency as any;
 
-            // Store the product data in the Products array to be created later in Dodo Payments
-            Products.push({
-                type: 'one_time_product',
-                data: {
-                    name: product.attributes.name,
-                    tax_category: 'saas',
-                    price: {
-                        currency: StoreData.data.attributes.currency as any,
-                        price: product.attributes.price,
-                        discount: 0,
-                        purchasing_power_parity: false,
-                        type: 'one_time_price'
-                    },
-                    brand_id: brand_id
+            // Fetch actual Price objects for this product
+            // First get variants, then fetch prices for each variant
+            let productPrices: any[] = [];
+            
+            try {
+                // Get variants for this product
+                const variants = (product as any)?.relationships?.variants?.data || [];
+                console.log(`[LOG] Found ${variants.length} variants for product ${product.id}`);
+                
+                // Fetch prices for each variant
+                for (const variant of variants) {
+                    const variantId = (variant as any).id;
+                    if (!variantId) continue;
+                    
+                    try {
+                        console.log(`[LOG] Fetching prices for variant ${variantId}`);
+                        const pricesResponse = await listPrices({ 
+                            filter: { variantId: variantId } 
+                        });
+                        
+                        if (pricesResponse.error || pricesResponse.statusCode !== 200) {
+                            console.log(`[WARNING] Failed to fetch prices for variant ${variantId}:`, pricesResponse.error);
+                            continue;
+                        }
+                        
+                        const variantPrices = pricesResponse.data?.data || [];
+                        productPrices.push(...variantPrices);
+                        console.log(`[LOG] Found ${variantPrices.length} prices for variant ${variantId}`);
+                        
+                    } catch (variantError: any) {
+                        console.log(`[WARNING] Exception while fetching prices for variant ${variantId}:`, variantError.message);
+                        continue;
+                    }
                 }
-            });
+                
+                console.log(`[LOG] Total prices found for product ${product.id}: ${productPrices.length}`);
+                
+            } catch (error: any) {
+                console.log(`[ERROR] Exception while processing variants for product ${product.id}:`, error.message);
+            }
+            
+            // If no prices found via variants, fallback to product-level price
+            if (productPrices.length === 0) {
+                console.log(`[WARNING] No prices found for product ${product.id}, using product-level price as fallback`);
+                if (product.attributes.price && product.attributes.price > 0) {
+                    Products.push({
+                        type: 'one_time_product',
+                        data: {
+                            name: product.attributes.name,
+                            tax_category: 'saas',
+                            price: {
+                                currency: priceCurrency as any,
+                                price: product.attributes.price,
+                                discount: 0,
+                                purchasing_power_parity: false,
+                                type: 'one_time_price'
+                            },
+                            brand_id: brand_id
+                        }
+                    });
+                }
+                continue;
+            }
+
+            // Filter prices by category
+            const subscriptionPrices = productPrices.filter((price: any) => 
+                price?.attributes?.category === 'subscription'
+            );
+            
+            const oneTimePrices = productPrices.filter((price: any) => 
+                price?.attributes?.category === 'one_time'
+            );
+
+            // Process subscription prices
+            for (const price of subscriptionPrices) {
+                const priceAttrs = price?.attributes;
+                if (!priceAttrs) continue;
+                
+                // Extract pricing data from Price object
+                const unitPriceCents = convertToCents(priceAttrs.unit_price, priceAttrs.unit_price_decimal);
+                const renewalIntervalQuantity = priceAttrs.renewal_interval_quantity || 1;
+                const renewalIntervalUnit = priceAttrs.renewal_interval_unit || 'month';
+                
+                // Check if this is a fixed-term subscription
+                // For now, assume evergreen (indefinite) subscriptions by default
+                // TODO: Add logic to detect fixed-term subscriptions when indicators are available
+                const isFixedTerm = false; // Placeholder - implement detection logic as needed
+
+                // Validate unit price
+                if (unitPriceCents <= 0) {
+                    console.log(`[WARNING] Skipping subscription price ${price.id} with invalid price (${unitPriceCents} cents)`);
+                    continue;
+                }
+
+                // Map Lemon Squeezy interval units to Dodo Payments format
+                const mapIntervalUnit = (unit: string): string => {
+                    const normalized = unit.toLowerCase();
+                    if (normalized === 'month' || normalized === 'monthly') return 'Month';
+                    if (normalized === 'year' || normalized === 'yearly') return 'Year';
+                    if (normalized === 'day' || normalized === 'daily') return 'Day';
+                    if (normalized === 'week' || normalized === 'weekly') return 'Week';
+                    return 'Month'; // fallback
+                };
+
+                const dodoIntervalUnit = mapIntervalUnit(renewalIntervalUnit);
+
+                // Normalize interval to supported billing periods (Dodo Payments supports monthly/yearly for billing_period)
+                const normalizedInterval = renewalIntervalUnit.toLowerCase();
+                const billingPeriod: 'monthly' | 'yearly' | null = 
+                    normalizedInterval === 'month' || normalizedInterval === 'monthly'
+                        ? 'monthly'
+                        : normalizedInterval === 'year' || normalizedInterval === 'yearly'
+                            ? 'yearly'
+                            : null;
+
+                if (!billingPeriod) {
+                    console.log(`[ERROR] Unsupported billing interval "${renewalIntervalUnit}" for subscription price ${price.id}; skipping to avoid creating a wrong plan`);
+                    continue;
+                }
+
+                // Create subscription product for this price
+                Products.push({
+                    type: 'subscription_product',
+                    data: {
+                        name: product.attributes.name,
+                        tax_category: 'saas',
+                        price: {
+                            currency: priceCurrency as any,
+                            price: unitPriceCents,
+                            discount: 0,
+                            purchasing_power_parity: false,
+                            type: 'recurring_price',
+                            billing_period: billingPeriod,
+                            payment_frequency_interval: dodoIntervalUnit,
+                            payment_frequency_count: renewalIntervalQuantity, // billing cadence
+                            subscription_period_interval: dodoIntervalUnit,
+                            ...(isFixedTerm ? { subscription_period_count: renewalIntervalQuantity || 1 } : {})
+                        },
+                        brand_id: brand_id
+                    }
+                });
+            }
+
+            // Process one-time prices
+            for (const price of oneTimePrices) {
+                const priceAttrs = price?.attributes;
+                if (!priceAttrs) continue;
+                
+                const unitPriceCents = convertToCents(priceAttrs.unit_price, priceAttrs.unit_price_decimal);
+
+                // Validate unit price
+                if (unitPriceCents <= 0) {
+                    console.log(`[WARNING] Skipping one-time price ${price.id} with invalid price (${unitPriceCents} cents)`);
+                    continue;
+                }
+
+                // Create one-time product for this price
+                Products.push({
+                    type: 'one_time_product',
+                    data: {
+                        name: product.attributes.name,
+                        tax_category: 'saas',
+                        price: {
+                            currency: priceCurrency as any,
+                            price: unitPriceCents,
+                            discount: 0,
+                            purchasing_power_parity: false,
+                            type: 'one_time_price'
+                        },
+                        brand_id: brand_id
+                    }
+                });
+            }
+
+            // Note: Fallback for no prices is handled earlier in the code (lines 171-191)
         }
 
         console.log('\n[LOG] These are the products to be migrated:');
         Products.forEach((product, index) => {
-            console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${(product.data.price.price / 100).toFixed(2)} (${product.type === 'one_time_product' ? 'One Time' : 'Unknown'})`);
+            const priceAmount = (product.data.price.price / 100).toFixed(2);
+            const isSubscription = product.type === 'subscription_product';
+            const kind = isSubscription ? 'Subscription' : 'One Time';
+            const billingSuffix = isSubscription ? ` (${product.data.price.billing_period})` : '';
+            console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${priceAmount} (${kind}${billingSuffix})`);
         });
 
         // Ask the user for final confirmation before creating the products in Dodo Payments
@@ -159,20 +342,50 @@ export default {
 
         if (migrateProducts === 'yes') {
             // Iterate all the stored products and create them in Dodo Payments
+            let successCount = 0;
+            let errorCount = 0;
+            
             for (let product of Products) {
                 // Blank line for better readability in logs
                 console.log();
-                // If the product type is one_time_product, invoke the client.products.create method
+                // Create the product in Dodo Payments (one-time or subscription)
+                try {
                 if (product.type === 'one_time_product') {
                     console.log(`[LOG] Migrating product: ${product.data.name}`);
-                    // Create the product in Dodo Payments
                     const createdProduct = await client.products.create(product.data);
                     console.log(`[LOG] Migration for product: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
+                        successCount++;
+                    } else if (product.type === 'subscription_product') {
+                        console.log(`[LOG] Migrating subscription: ${product.data.name}`);
+                        const createdProduct = await client.products.create(product.data);
+                        console.log(`[LOG] Migration for subscription: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
+                        successCount++;
                 } else {
                     console.log(`[LOG] Skipping product: ${product.data.name} for unknown product type (example one time, subscription, etc)`);
                 }
+                } catch (error: any) {
+                    errorCount++;
+                    console.log(`[ERROR] Failed to migrate product: ${product.data.name}`);
+                    console.log(`[ERROR] Error details: ${error.message || error.toString()}`);
+                    
+                    // Log additional error context if available
+                    if (error.status) {
+                        console.log(`[ERROR] HTTP Status: ${error.status}`);
+                    }
+                    if (error.error?.message) {
+                        console.log(`[ERROR] API Error: ${error.error.message}`);
+                    }
+                    
+                    // Continue with next product instead of crashing
+                    console.log(`[LOG] Continuing with remaining products...`);
+                }
             }
-            console.log('\n[LOG] All products migrated successfully!');
+            
+            // Summary of migration results
+            console.log(`\n[LOG] Migration completed! Success: ${successCount}, Errors: ${errorCount}`);
+            if (errorCount > 0) {
+                console.log(`[LOG] ${errorCount} product(s) failed to migrate. Check error messages above for details.`);
+            }
         } else {
             console.log('[LOG] Migration aborted by user');
             process.exit(0);
@@ -181,6 +394,8 @@ export default {
         // -----------------------------
         // Coupons (Discounts) Migration
         // -----------------------------
+
+        // Continue with coupon migration (requires a valid Lemon Squeezy API key)
 
         // Helper to resolve a store's currency on-demand and cache it in StoresData
         const resolveStoreCurrency = async (storeId?: string | number | null): Promise<string | undefined> => {
