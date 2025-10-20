@@ -255,8 +255,8 @@ export default {
                 const discountData = {
                     name: discount.attributes.name,
                     code: discount.attributes.code,
-                    type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
-                    value: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount,
+                    discount_type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
+                    amount: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount,
                     // For fixed amount discounts, prefer discount currency; fallback to store currency (cached or fetched above)
                     currency: discount.attributes.amount_type === 'fixed' ? fixedCurrency : undefined,
                     usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
@@ -270,9 +270,9 @@ export default {
             if (Coupons.length > 0) {
                 console.log('\n[LOG] These are the coupons to be migrated:');
                 Coupons.forEach((coupon, index) => {
-                    const value = coupon.data.type === 'percentage'
-                        ? `${coupon.data.value}%`
-                        : `${coupon.data.currency} ${(coupon.data.value / 100).toFixed(2)}`;
+                    const value = coupon.data.discount_type === 'percentage'
+                        ? `${coupon.data.amount}%`
+                        : `${coupon.data.currency} ${(coupon.data.amount / 100).toFixed(2)}`;
                     const expiry = coupon.data.expires_at ? ` (expires: ${new Date(coupon.data.expires_at).toLocaleDateString()})` : '';
                     const usage = coupon.data.usage_limit ? ` (max uses: ${coupon.data.usage_limit})` : '';
                     console.log(`${index + 1}. ${coupon.data.name} (${coupon.data.code}) - ${value}${expiry}${usage}`);
@@ -288,6 +288,10 @@ export default {
                 });
 
                 if (migrateCoupons === 'yes') {
+                    // Track migration results
+                    let successCount = 0;
+                    let failureCount = 0;
+                    
                     // Iterate all the stored coupons and create them in Dodo Payments
                     for (let coupon of Coupons) {
                         console.log();
@@ -296,12 +300,22 @@ export default {
                             // Create the coupon in Dodo Payments
                             const createdCoupon = await client.discounts.create(coupon.data);
                             console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
+                            successCount++;
                         } catch (error) {
                             console.log(`[ERROR] Failed to migrate coupon: ${coupon.data.name} - ${error}`);
+                            failureCount++;
                         }
                     }
-                    console.log('\n[LOG] All coupons migrated successfully!');
-                    completedCoupons = true;
+                    
+                    // Report results based on actual success/failure
+                    if (failureCount === 0) {
+                        console.log('\n[LOG] All coupons migrated successfully!');
+                        completedCoupons = true;
+                    } else if (successCount === 0) {
+                        console.log('\n[ERROR] All coupon migrations failed!');
+                    } else {
+                        console.log(`\n[LOG] Coupon migration completed with ${successCount} successful and ${failureCount} failed migrations.`);
+                    }
                 } else {
                     console.log('[LOG] Coupons migration aborted by user');
                 }

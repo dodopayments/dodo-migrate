@@ -302,7 +302,7 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                     code: coupon.id,
                     name: coupon.name || coupon.id,
                     discount_type: discountType,
-                    discount_value: discountValue,
+                    amount: discountValue,
                     currency: currency,
                     usage_limit: coupon.max_redemptions || null,
                     expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
@@ -332,7 +332,7 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                         code: promotionCode.code,
                         name: coupon.name || coupon.id,
                         discount_type: discountType,
-                        discount_value: discountValue,
+                        amount: discountValue,
                         currency: currency,
                         usage_limit: coupon.max_redemptions || null,
                         expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
@@ -350,8 +350,8 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
         console.log('\n[LOG] These are the coupons to be migrated:');
         CouponsToMigrate.forEach((coupon, index) => {
             const discount = coupon.discount_type === 'percentage' 
-                ? `${coupon.discount_value}%` 
-                : `${coupon.currency} ${(coupon.discount_value / 100).toFixed(2)}`;
+                ? `${coupon.amount}%` 
+                : `${coupon.currency} ${(coupon.amount / 100).toFixed(2)}`;
             console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${discount} discount`);
         });
 
@@ -364,16 +364,30 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
         });
 
         if (migrateCoupons === 'yes') {
+            // Track migration results
+            let successCount = 0;
+            let failureCount = 0;
+            
             for (const coupon of CouponsToMigrate) {
                 console.log(`[LOG] Migrating coupon: ${coupon.name} (${coupon.code})`);
                 try {
                     const createdCoupon = await client.discounts.create(coupon);
                     console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
+                    successCount++;
                 } catch (error: any) {
                     console.log(`[ERROR] Failed to migrate coupon: ${coupon.name} - ${error.message}`);
+                    failureCount++;
                 }
             }
-            console.log('[LOG] Coupons migration completed!');
+            
+            // Report results based on actual success/failure
+            if (failureCount === 0) {
+                console.log('[LOG] All coupons migrated successfully!');
+            } else if (successCount === 0) {
+                console.log('[ERROR] All coupon migrations failed!');
+            } else {
+                console.log(`[LOG] Coupon migration completed with ${successCount} successful and ${failureCount} failed migrations.`);
+            }
         } else {
             console.log('[LOG] Coupons migration skipped by user');
         }
@@ -479,3 +493,4 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
         console.log("[ERROR] Failed to migrate customers!\n", error.message);
     }
 }
+
