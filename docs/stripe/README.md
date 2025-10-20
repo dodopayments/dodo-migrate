@@ -41,6 +41,11 @@ dodo-migrate stripe \
 dodo-migrate stripe --migrate-types=products
 ```
 
+**Migrate customers and products:**
+```bash
+dodo-migrate stripe --migrate-types=customers,products
+```
+
 #### What gets migrated:
 
 **Products:**

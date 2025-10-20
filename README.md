@@ -14,8 +14,9 @@
 Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate your data from popular payment providers into Dodo Payments. Whether you're moving products, customers, or discount codes, Dodo Migrate guides you through a secure, auditable, and repeatable migration process with interactive prompts and sensible defaults.
 
 **Supported providers:**
-- [x] Lemon Squeezy (Products, Coupons)
-- [x] Stripe (Products, Coupons, Customers)
+- [x] Lemon Squeezy
+- [x] Stripe
+- [x] Polar.sh
 - [ ] Gumroad
 - [ ] 2Checkout
 - [ ] FastSpring
@@ -23,7 +24,7 @@ Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate y
 
 **Supported models:**
 - [x] Products
-- [x] Discount codes/Coupons
+- [x] Discount codes
 - [x] Customers
 
 ## Contents
@@ -63,6 +64,10 @@ Migrate from Stripe to Dodo Payments:
 ```
 dodo-migrate stripe
 ```
+Migrate from Polar.sh to Dodo Payments:
+```
+dodo-migrate polar
+```
 You'll be prompted for any missing inputs (API keys, brand selection, environment).
 
 ## CLI reference
@@ -90,6 +95,7 @@ dodo-migrate lemonsqueezy --help
 Detailed, provider-specific docs:
 - [Lemon Squeezy → Dodo Payments](./docs/lemonsqueezy/README.md)
 - [Stripe → Dodo Payments](./docs/stripe/README.md)
+- [Polar.sh → Dodo Payments](./docs/polar/README.md)
 
 ## Examples
 - Minimal migration from Lemon Squeezy (interactive):
@@ -100,6 +106,11 @@ dodo-migrate lemonsqueezy
 - Minimal migration from Stripe (interactive):
 ```
 dodo-migrate stripe
+```
+
+- Minimal migration from Polar.sh (interactive):
+```
+dodo-migrate polar
 ```
 
 - Non-interactive run (all flags provided):
@@ -116,6 +127,13 @@ dodo-migrate stripe \
   --mode=test_mode \
   --dodo-brand-id=brand_XXXXXX \
   --migrate-types=products,coupons
+
+dodo-migrate polar \
+  --provider-api-key=polar_org_XXXXXXXXXXXXXXXX \
+  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
+  --mode=test_mode \
+  --dodo-brand-id=brand_XXXXXX \
+  --migrate-types=products,discounts,customers
 ```
 
 ## Update / Uninstall
