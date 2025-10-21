@@ -232,47 +232,29 @@ export default {
 
             // Process each discount
             for (let discount of validDiscounts) {
-                // Determine currency for fixed amount discounts, preferring the discount's own currency
-                let fixedCurrency: string | undefined = undefined;
-                if (discount.attributes.amount_type === 'fixed') {
-                    fixedCurrency = (discount as any).attributes.currency;
-                    if (!fixedCurrency) {
-                        // Fallback: use cached store currency or fetch and cache the store if not present
-                        if (!StoresData[discount.attributes.store_id]) {
-                            console.log(`[LOG] Fetching store data for store ID ${discount.attributes.store_id} to determine currency for fixed discount`);
-                            const FetchStoreData = await getStore(discount.attributes.store_id);
-                            if (FetchStoreData.error || FetchStoreData.statusCode !== 200) {
-                                console.log(`[ERROR] Failed to fetch store data for store ID ${discount.attributes.store_id}\n`, FetchStoreData.error);
-                                process.exit(1);
-                            }
-                            StoresData[discount.attributes.store_id] = FetchStoreData.data;
-                        } else {
-                            console.log(`[LOG] Using cached store data for store ID ${discount.attributes.store_id} to determine currency for fixed discount`);
-                        }
-                        fixedCurrency = StoresData[discount.attributes.store_id]?.data.attributes.currency as any;
-                    }
-                }
-                const discountData = {
-                    name: discount.attributes.name,
-                    code: discount.attributes.code,
-                    discount_type: discount.attributes.amount_type === 'percent' ? 'percentage' : 'fixed_amount',
-                    amount: discount.attributes.amount_type === 'percent' ? discount.attributes.amount : discount.attributes.amount,
-                    // For fixed amount discounts, prefer discount currency; fallback to store currency (cached or fetched above)
-                    currency: discount.attributes.amount_type === 'fixed' ? fixedCurrency : undefined,
-                    usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
-                    expires_at: discount.attributes.expires_at,
-                    brand_id: brand_id
-                };
+                // Only process percentage discounts - Dodo Payments SDK doesn't support fixed amount discounts
+                if (discount.attributes.amount_type === 'percent') {
+                    const discountData = {
+                        name: discount.attributes.name,
+                        code: discount.attributes.code,
+                        discount_type: 'percentage',
+                        amount: discount.attributes.amount,
+                        usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
+                        expires_at: discount.attributes.expires_at,
+                        brand_id: brand_id
+                    };
 
-                Coupons.push({ data: discountData });
+                    Coupons.push({ data: discountData });
+                } else {
+                    // Show warning for fixed amount discounts that cannot be migrated
+                    console.log(`[WARNING] Skipping fixed amount discount "${discount.attributes.name}" (${discount.attributes.code}) - Dodo Payments SDK doesn't support non-percentage discounts`);
+                }
             }
 
             if (Coupons.length > 0) {
                 console.log('\n[LOG] These are the coupons to be migrated:');
                 Coupons.forEach((coupon, index) => {
-                    const value = coupon.data.discount_type === 'percentage'
-                        ? `${coupon.data.amount}%`
-                        : `${coupon.data.currency} ${(coupon.data.amount / 100).toFixed(2)}`;
+                    const value = `${coupon.data.amount}%`;
                     const expiry = coupon.data.expires_at ? ` (expires: ${new Date(coupon.data.expires_at).toLocaleDateString()})` : '';
                     const usage = coupon.data.usage_limit ? ` (max uses: ${coupon.data.usage_limit})` : '';
                     console.log(`${index + 1}. ${coupon.data.name} (${coupon.data.code}) - ${value}${expiry}${usage}`);
