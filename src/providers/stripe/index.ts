@@ -36,13 +36,13 @@ export default {
             });
     },
     handler: async (argv: any) => {
-        const PROVIDER_API_KEY = argv['provider-api-key'] || await input({ 
-            message: 'Enter your Stripe Secret API Key (sk_...):', 
-            required: true 
+        const PROVIDER_API_KEY = argv['provider-api-key'] || await input({
+            message: 'Enter your Stripe Secret API Key (sk_...):',
+            required: true
         });
-        const DODO_API_KEY = argv['dodo-api-key'] || await input({ 
-            message: 'Enter your Dodo Payments API Key:', 
-            required: true 
+        const DODO_API_KEY = argv['dodo-api-key'] || await input({
+            message: 'Enter your Dodo Payments API Key:',
+            required: true
         });
         const MODE = argv['mode'] || await select({
             message: 'Select Dodo Payments environment:',
@@ -53,9 +53,7 @@ export default {
             default: 'test_mode'
         });
 
-        const stripe = new Stripe(PROVIDER_API_KEY, {
-            apiVersion: '2025-02-24.acacia',
-        });
+        const stripe = new Stripe(PROVIDER_API_KEY);
 
         try {
             await stripe.accounts.retrieve();
@@ -123,65 +121,79 @@ export default {
 
 async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting products migration...');
-    
+
     try {
-        // Paginate through all products
-        const allProducts: Stripe.Product[] = [];
-        await stripe.products.list({
+        const products = await stripe.products.list({
             limit: 100,
             active: true
-        }).autoPagingEach((product) => {
-            allProducts.push(product);
         });
 
-        if (allProducts.length === 0) {
+        if (products.data.length === 0) {
             console.log('[LOG] No active products found in Stripe');
             return;
         }
 
-        console.log(`[LOG] Found ${allProducts.length} active products in Stripe`);
+        console.log(`[LOG] Found ${products.data.length} active products in Stripe`);
 
         const ProductsToMigrate: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
 
-        for (const product of allProducts) {
-            // Paginate through all prices for this product
-            const allPrices: Stripe.Price[] = [];
-            await stripe.prices.list({
+        for (const product of products.data) {
+            const prices = await stripe.prices.list({
                 product: product.id,
                 active: true
-            }).autoPagingEach((price) => {
-                allPrices.push(price);
             });
 
-            if (allPrices.length === 0) {
+            if (prices.data.length === 0) {
                 console.log(`[LOG] Skipping product ${product.name} - no active prices found`);
                 continue;
             }
 
-            for (const price of allPrices) {
+            for (const price of prices.data) {
                 const isRecurring = price.type === 'recurring';
-                if (price.unit_amount == null) {
-                    console.log(`[LOG] Skipping price ${price.id} with null unit_amount (tiered/custom)`);
-                    continue;
-                }
-                
+
                 if (isRecurring) {
+                    const interval = price.recurring?.interval;
+                    const intervalCount = 240; // 20 years max subscription period
+
+                    if (interval !== 'month' && interval !== 'year') {
+                        console.log(`[ERROR] Unsupported billing interval "${interval}" for product ${product.id}; skipping to avoid creating a wrong plan`);
+                        continue;
+                    }
+
+                    // Map interval to Dodo format
+                    const intervalMap: Record<string, string> = {
+                        'day': 'Day',
+                        'week': 'Week',
+                        'month': 'Month',
+                        'year': 'Year'
+                    };
+                    const paymentFrequencyInterval = intervalMap[interval];
+
                     ProductsToMigrate.push({
                         type: 'subscription_product',
                         data: {
                             name: product.name || 'Unnamed Product',
                             description: product.description || '',
                             tax_category: 'saas',
+                            type: 'subscription',
                             price: {
                                 currency: price.currency.toUpperCase(),
                                 price: price.unit_amount || 0,
                                 discount: 0,
                                 purchasing_power_parity: false,
                                 type: 'recurring_price',
-                                billing_period: price.recurring?.interval === 'month' ? 'monthly' : 
-                                               price.recurring?.interval === 'year' ? 'yearly' : 'monthly'
+                                billing_period: interval === 'month' ? 'monthly' : 'yearly',
+                                payment_frequency_interval: paymentFrequencyInterval,
+                                payment_frequency_count: intervalCount,
+                                subscription_period_interval: paymentFrequencyInterval,
+                                subscription_period_count: intervalCount
                             },
-                            brand_id: brand_id
+                            brand_id: brand_id,
+                            metadata: {
+                                stripe_price_id: price.id,
+                                stripe_product_id: product.id,
+                                migrated_from: 'stripe'
+                            }
                         }
                     });
                 } else {
@@ -191,6 +203,7 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                             name: product.name || 'Unnamed Product',
                             description: product.description || '',
                             tax_category: 'saas',
+                            type: 'one_time',
                             price: {
                                 currency: price.currency.toUpperCase(),
                                 price: price.unit_amount || 0,
@@ -198,7 +211,12 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                                 purchasing_power_parity: false,
                                 type: 'one_time_price'
                             },
-                            brand_id: brand_id
+                            brand_id: brand_id,
+                            metadata: {
+                                stripe_price_id: price.id,
+                                stripe_product_id: product.id,
+                                migrated_from: 'stripe'
+                            }
                         }
                     });
                 }
@@ -248,97 +266,46 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
 async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting coupons migration...');
-    
+
     try {
-        // Paginate through all coupons
-        const allCoupons: Stripe.Coupon[] = [];
-        await stripe.coupons.list({
+        const coupons = await stripe.coupons.list({
             limit: 100
-        }).autoPagingEach((coupon) => {
-            allCoupons.push(coupon);
         });
 
-        if (allCoupons.length === 0) {
+        if (coupons.data.length === 0) {
             console.log('[LOG] No coupons found in Stripe');
             return;
         }
 
-        console.log(`[LOG] Found ${allCoupons.length} coupons in Stripe`);
+        console.log(`[LOG] Found ${coupons.data.length} coupons in Stripe`);
 
         const CouponsToMigrate: any[] = [];
 
-        for (const coupon of allCoupons) {
+        for (const coupon of coupons.data) {
             if (!coupon.valid) {
                 console.log(`[LOG] Skipping invalid coupon: ${coupon.id}`);
                 continue;
             }
 
-            // Fetch promotion codes for this coupon
-            const promotionCodes = await stripe.promotionCodes.list({
-                coupon: coupon.id,
-                limit: 100
-            });
-
-            // If no promotion codes exist, create one using the coupon ID as the code
-            if (promotionCodes.data.length === 0) {
-                let discountType: 'percentage' | 'fixed_amount';
-                let discountValue: number;
-
-                if (coupon.percent_off) {
-                    discountType = 'percentage';
-                    discountValue = coupon.percent_off;
-                } else if (coupon.amount_off) {
-                    discountType = 'fixed_amount';
-                    discountValue = coupon.amount_off;
-                } else {
-                    console.log(`[LOG] Skipping coupon ${coupon.id} - no discount value found`);
-                    continue;
-                }
-
-                // Only set currency for fixed amount coupons
-                const currency = coupon.amount_off ? coupon.currency?.toUpperCase() : undefined;
-
+            // Dodo Payments only supports percentage discounts
+            // Note: Stripe stores percent_off as integer (15 for 15%)
+            // Dodo Payments expects amount multiplied by 100 (1500 for 15%)
+            if (coupon.percent_off) {
                 CouponsToMigrate.push({
                     code: coupon.id,
                     name: coupon.name || coupon.id,
-                    discount_type: discountType,
-                    amount: discountValue,
-                    currency: currency,
+                    type: 'percentage',
+                    amount: coupon.percent_off * 100, // Convert: 15 -> 1500, 20 -> 2000, etc.
                     usage_limit: coupon.max_redemptions || null,
                     expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
                     brand_id: brand_id
                 });
+            } else if (coupon.amount_off) {
+                console.log(`[LOG] Skipping coupon ${coupon.id} (${coupon.name || coupon.id}) - Dodo Payments only supports percentage discounts, not fixed amount discounts`);
+                continue;
             } else {
-                // Process each promotion code
-                for (const promotionCode of promotionCodes.data) {
-                    let discountType: 'percentage' | 'fixed_amount';
-                    let discountValue: number;
-
-                    if (coupon.percent_off) {
-                        discountType = 'percentage';
-                        discountValue = coupon.percent_off;
-                    } else if (coupon.amount_off) {
-                        discountType = 'fixed_amount';
-                        discountValue = coupon.amount_off;
-                    } else {
-                        console.log(`[LOG] Skipping promotion code ${promotionCode.code} - no discount value found`);
-                        continue;
-                    }
-
-                    // Only set currency for fixed amount coupons
-                    const currency = coupon.amount_off ? coupon.currency?.toUpperCase() : undefined;
-
-                    CouponsToMigrate.push({
-                        code: promotionCode.code,
-                        name: coupon.name || coupon.id,
-                        discount_type: discountType,
-                        amount: discountValue,
-                        currency: currency,
-                        usage_limit: coupon.max_redemptions || null,
-                        expires_at: coupon.redeem_by ? new Date(coupon.redeem_by * 1000).toISOString() : null,
-                        brand_id: brand_id
-                    });
-                }
+                console.log(`[LOG] Skipping coupon ${coupon.id} - no discount value found`);
+                continue;
             }
         }
 
@@ -349,10 +316,7 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
         console.log('\n[LOG] These are the coupons to be migrated:');
         CouponsToMigrate.forEach((coupon, index) => {
-            const discount = coupon.discount_type === 'percentage' 
-                ? `${coupon.amount}%` 
-                : `${coupon.currency} ${(coupon.amount / 100).toFixed(2)}`;
-            console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${discount} discount`);
+            console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${coupon.amount / 100}% discount`);
         });
 
         const migrateCoupons = await select({
@@ -364,30 +328,16 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
         });
 
         if (migrateCoupons === 'yes') {
-            // Track migration results
-            let successCount = 0;
-            let failureCount = 0;
-            
             for (const coupon of CouponsToMigrate) {
                 console.log(`[LOG] Migrating coupon: ${coupon.name} (${coupon.code})`);
                 try {
                     const createdCoupon = await client.discounts.create(coupon);
                     console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
-                    successCount++;
                 } catch (error: any) {
                     console.log(`[ERROR] Failed to migrate coupon: ${coupon.name} - ${error.message}`);
-                    failureCount++;
                 }
             }
-            
-            // Report results based on actual success/failure
-            if (failureCount === 0) {
-                console.log('[LOG] All coupons migrated successfully!');
-            } else if (successCount === 0) {
-                console.log('[ERROR] All coupon migrations failed!');
-            } else {
-                console.log(`[LOG] Coupon migration completed with ${successCount} successful and ${failureCount} failed migrations.`);
-            }
+            console.log('[LOG] Coupons migration completed!');
         } else {
             console.log('[LOG] Coupons migration skipped by user');
         }
@@ -399,61 +349,45 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
 async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: string) {
     console.log('\n[LOG] Starting customers migration...');
-    
+
     try {
-        // Paginate through all customers
-        const allCustomers: Stripe.Customer[] = [];
-        await stripe.customers.list({
+        const customers = await stripe.customers.list({
             limit: 100
-        }).autoPagingEach((customer) => {
-            allCustomers.push(customer);
         });
 
-        if (allCustomers.length === 0) {
+        if (customers.data.length === 0) {
             console.log('[LOG] No customers found in Stripe');
             return;
         }
 
-        console.log(`[LOG] Found ${allCustomers.length} customers in Stripe`);
+        console.log(`[LOG] Found ${customers.data.length} customers in Stripe`);
 
         const CustomersToMigrate: any[] = [];
 
-        for (const customer of allCustomers) {
+        for (const customer of customers.data) {
             if (customer.deleted) {
                 console.log(`[LOG] Skipping deleted customer: ${customer.id}`);
                 continue;
             }
 
-            // Clean up address fields - remove address object if all fields are empty
-                const address = {
+            CustomersToMigrate.push({
+                email: customer.email || '',
+                name: customer.name || '',
+                phone: customer.phone || '',
+                address: {
                     line1: customer.address?.line1 || '',
                     line2: customer.address?.line2 || '',
                     city: customer.address?.city || '',
                     state: customer.address?.state || '',
                     postal_code: customer.address?.postal_code || '',
                     country: customer.address?.country || ''
-                };
-
-                // Check if all address fields are empty or only whitespace
-                const isAddressEmpty = Object.values(address).every(field => !field || field.trim() === '');
-
-                const customerData: any = {
-                    email: customer.email || '',
-                    name: customer.name || '',
-                    phone: customer.phone || '',
-                    brand_id: brand_id,
-                    metadata: {
-                        stripe_customer_id: customer.id,
-                        migrated_from: 'stripe'
-                    }
-                };
-
-                // Only add address if it's not empty
-                if (!isAddressEmpty) {
-                    customerData.address = address;
+                },
+                brand_id: brand_id,
+                metadata: {
+                    stripe_customer_id: customer.id,
+                    migrated_from: 'stripe'
                 }
-
-                CustomersToMigrate.push(customerData);
+            });
         }
 
         if (CustomersToMigrate.length === 0) {
@@ -493,4 +427,3 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
         console.log("[ERROR] Failed to migrate customers!\n", error.message);
     }
 }
-

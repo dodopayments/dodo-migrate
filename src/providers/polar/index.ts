@@ -351,7 +351,7 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
                                 billing_period: billingPeriod,
                                 payment_frequency_count: 1,
                                 payment_frequency_interval: intervalUnit,
-                                subscription_period_count: 1,
+                                subscription_period_count: 240, // 20 years max subscription period
                                 subscription_period_interval: intervalUnit
                             },
                             brand_id: brand_id
