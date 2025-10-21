@@ -110,7 +110,7 @@ export default {
 
         // This will be the array of products to be created in Dodo Payments
         const Products: { type: 'one_time_product', data: any }[] = [];
-        
+
         // This will be the array of coupons to be created in Dodo Payments
         const Coupons: { data: any }[] = [];
 
@@ -121,7 +121,7 @@ export default {
         // Migrate products if selected
         if (migrationTypes.includes('products')) {
             console.log('\n[LOG] Starting products migration...');
-            
+
             // List the products from the Lemon Squeezy SDK
             const ListProducts = await listProducts();
             if (ListProducts.error || ListProducts.statusCode !== 200) {
@@ -213,7 +213,7 @@ export default {
         // Migrate coupons if selected
         if (migrationTypes.includes('coupons')) {
             console.log('\n[LOG] Starting coupons migration...');
-            
+
             // List the discounts from the Lemon Squeezy SDK
             const ListDiscounts = await listDiscounts();
             if (ListDiscounts.error || ListDiscounts.statusCode !== 200) {
@@ -224,7 +224,7 @@ export default {
             console.log('[LOG] Found ' + ListDiscounts.data.data.length + ' discounts in Lemon Squeezy');
 
             // Filter only published discounts
-            const validDiscounts = ListDiscounts.data.data.filter((discount: any) => 
+            const validDiscounts = ListDiscounts.data.data.filter((discount: any) =>
                 discount.attributes.status === 'published'
             );
 
@@ -237,8 +237,9 @@ export default {
                     const discountData = {
                         name: discount.attributes.name,
                         code: discount.attributes.code,
-                        discount_type: 'percentage',
-                        amount: discount.attributes.amount,
+                        type: 'percentage',
+                        // * 100 to normalize the percentage value for Dodo Payments sdk
+                        amount: discount.attributes.amount * 100,
                         usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
                         expires_at: discount.attributes.expires_at,
                         brand_id: brand_id
@@ -254,7 +255,8 @@ export default {
             if (Coupons.length > 0) {
                 console.log('\n[LOG] These are the coupons to be migrated:');
                 Coupons.forEach((coupon, index) => {
-                    const value = `${coupon.data.amount}%`;
+                    // / 100 to normalize the percentage value for display
+                    const value = `${coupon.data.amount / 100}%`;
                     const expiry = coupon.data.expires_at ? ` (expires: ${new Date(coupon.data.expires_at).toLocaleDateString()})` : '';
                     const usage = coupon.data.usage_limit ? ` (max uses: ${coupon.data.usage_limit})` : '';
                     console.log(`${index + 1}. ${coupon.data.name} (${coupon.data.code}) - ${value}${expiry}${usage}`);
@@ -273,7 +275,7 @@ export default {
                     // Track migration results
                     let successCount = 0;
                     let failureCount = 0;
-                    
+
                     // Iterate all the stored coupons and create them in Dodo Payments
                     for (let coupon of Coupons) {
                         console.log();
@@ -288,7 +290,7 @@ export default {
                             failureCount++;
                         }
                     }
-                    
+
                     // Report results based on actual success/failure
                     if (failureCount === 0) {
                         console.log('\n[LOG] All coupons migrated successfully!');
@@ -310,7 +312,7 @@ export default {
         const completedMigrations: string[] = [];
         if (completedProducts) completedMigrations.push('products');
         if (completedCoupons) completedMigrations.push('coupons');
-        
+
         if (completedMigrations.length > 0) {
             console.log(`\n[LOG] Migration completed for: ${completedMigrations.join(', ')}`);
         }
