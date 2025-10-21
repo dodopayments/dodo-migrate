@@ -153,7 +153,7 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
                 if (isRecurring) {
                     const interval = price.recurring?.interval;
-                    const intervalCount = price.recurring?.interval_count || 1;
+                    const intervalCount = 240; // 20 years max subscription period
 
                     if (interval !== 'month' && interval !== 'year') {
                         console.log(`[ERROR] Unsupported billing interval "${interval}" for product ${product.id}; skipping to avoid creating a wrong plan`);
