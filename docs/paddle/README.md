@@ -136,7 +136,8 @@ dodo-migrate paddle --migrate-types=customers,products
 
 **Discounts:**
 - Paddle `type: "percentage"` → Dodo `type: "percentage"`
-- Paddle percentage (0.15 for 15%) → Dodo basis points (1500 for 15%)
+- Paddle percentage ("15" for 15%) → Dodo basis points (1500 for 15%)
+- Note: Paddle stores percentage discounts as numeric strings representing whole percentages (e.g., "15" for 15%), not fractional values
 
 **Customers:**
 - Paddle `email` → Dodo `email`

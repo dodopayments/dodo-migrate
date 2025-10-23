@@ -207,9 +207,9 @@ export default {
             })).trim();
         }
 
-        // Default to production environment to avoid connection issues
+        // Default to sandbox environment for safety
         if (!argv['paddle-environment']) {
-            PADDLE_ENV = 'production';
+            PADDLE_ENV = 'sandbox';
         }
 
         if (!DODO_API_KEY) {
