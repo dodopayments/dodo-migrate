@@ -28,9 +28,13 @@ dodo-migrate paddle
 
 **Non-interactive migration with all options:**
 ```bash
+# Set environment variables (recommended for security)
+export PADDLE_API_KEY="your_paddle_api_key"
+export DODO_API_KEY="dp_XXXXXXXXXXXXXXXX"
+
 dodo-migrate paddle \
-  --provider-api-key=your_paddle_api_key \
-  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
+  --provider-api-key="$PADDLE_API_KEY" \
+  --dodo-api-key="$DODO_API_KEY" \
   --mode=test_mode \
   --dodo-brand-id=brand_XXXXXX \
   --migrate-types=products,discounts
@@ -80,7 +84,9 @@ dodo-migrate paddle --migrate-types=customers,products
 
 #### Security Notes:
 
-- Never share your Paddle API key
+- **Never share your Paddle API key**
+- **Use environment variables** instead of passing API keys directly in command line arguments
+- **Avoid exposing API keys in shell history** - use `export` commands or `.env` files
 - Use sandbox keys for testing migrations
 - The migration tool only reads data from Paddle, it doesn't modify your Paddle account
 - All data is migrated to the Dodo Payments environment you specify (test_mode or live_mode)
