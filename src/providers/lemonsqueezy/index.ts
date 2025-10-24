@@ -1,6 +1,9 @@
 import { listProducts, lemonSqueezySetup, getProduct, getStore, Store, listDiscounts } from '@lemonsqueezy/lemonsqueezy.js';
 import DodoPayments from 'dodopayments';
 import { input, select, checkbox } from '@inquirer/prompts';
+import { importLemonSqueezyDiscounts, filterDiscounts } from '../../adapters/lemonsqueezy/importDiscounts.js';
+import { transformMultipleToDodoPayments } from '../../transformers/discountTransformer.js';
+import { CanonicalDiscount } from '../../models/discount.js';
 
 
 export default {
@@ -111,8 +114,7 @@ export default {
         // This will be the array of products to be created in Dodo Payments
         const Products: { type: 'one_time_product', data: any }[] = [];
 
-        // This will be the array of coupons to be created in Dodo Payments
-        const Coupons: { data: any }[] = [];
+        // Coupons are now handled through the new adapter and transformer system
 
         // Track actual completion state for each migration branch
         let completedProducts = false;
@@ -214,97 +216,90 @@ export default {
         if (migrationTypes.includes('coupons')) {
             console.log('\n[LOG] Starting coupons migration...');
 
-            // List the discounts from the Lemon Squeezy SDK
-            const ListDiscounts = await listDiscounts();
-            if (ListDiscounts.error || ListDiscounts.statusCode !== 200) {
-                console.log("[ERROR] Failed to fetch discounts from Lemon Squeezy!\n", ListDiscounts.error);
-                process.exit(1);
-            }
+            try {
+                // Import discounts using the new adapter
+                const canonicalDiscounts = await importLemonSqueezyDiscounts();
+                console.log('[LOG] Found ' + canonicalDiscounts.length + ' discounts in Lemon Squeezy');
 
-            console.log('[LOG] Found ' + ListDiscounts.data.data.length + ' discounts in Lemon Squeezy');
+                // Filter only published discounts
+                const publishedDiscounts = filterDiscounts(canonicalDiscounts, 'published');
+                console.log('[LOG] Found ' + publishedDiscounts.length + ' valid (published) discounts');
 
-            // Filter only published discounts
-            const validDiscounts = ListDiscounts.data.data.filter((discount: any) =>
-                discount.attributes.status === 'published'
-            );
+                // Filter only percentage discounts (Dodo Payments SDK limitation)
+                const percentageDiscounts = filterDiscounts(publishedDiscounts, undefined, 'percentage');
+                const fixedDiscounts = filterDiscounts(publishedDiscounts, undefined, 'fixed');
 
-            console.log('[LOG] Found ' + validDiscounts.length + ' valid (published) discounts');
-
-            // Process each discount
-            for (let discount of validDiscounts) {
-                // Only process percentage discounts - Dodo Payments SDK doesn't support fixed amount discounts
-                if (discount.attributes.amount_type === 'percent') {
-                    const discountData = {
-                        name: discount.attributes.name,
-                        code: discount.attributes.code,
-                        type: 'percentage',
-                        // * 100 to normalize the percentage value for Dodo Payments sdk
-                        amount: discount.attributes.amount * 100,
-                        usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
-                        expires_at: discount.attributes.expires_at,
-                        brand_id: brand_id
-                    };
-
-                    Coupons.push({ data: discountData });
-                } else {
-                    // Show warning for fixed amount discounts that cannot be migrated
-                    console.log(`[WARNING] Skipping fixed amount discount "${discount.attributes.name}" (${discount.attributes.code}) - Dodo Payments SDK doesn't support non-percentage discounts`);
+                if (fixedDiscounts.length > 0) {
+                    console.log(`[WARNING] Skipping ${fixedDiscounts.length} fixed amount discounts - Dodo Payments SDK doesn't support non-percentage discounts`);
+                    fixedDiscounts.forEach(discount => {
+                        console.log(`[WARNING] Skipping fixed amount discount "${discount.name}" (${discount.code})`);
+                    });
                 }
-            }
 
-            if (Coupons.length > 0) {
-                console.log('\n[LOG] These are the coupons to be migrated:');
-                Coupons.forEach((coupon, index) => {
-                    // / 100 to normalize the percentage value for display
-                    const value = `${coupon.data.amount / 100}%`;
-                    const expiry = coupon.data.expires_at ? ` (expires: ${new Date(coupon.data.expires_at).toLocaleDateString()})` : '';
-                    const usage = coupon.data.usage_limit ? ` (max uses: ${coupon.data.usage_limit})` : '';
-                    console.log(`${index + 1}. ${coupon.data.name} (${coupon.data.code}) - ${value}${expiry}${usage}`);
-                });
+                if (percentageDiscounts.length > 0) {
+                    // Transform to Dodo Payments format
+                    const dodoDiscounts = transformMultipleToDodoPayments(percentageDiscounts, brand_id);
 
-                // Ask the user for final confirmation before creating the coupons in Dodo Payments
-                const migrateCoupons = await select({
-                    message: 'Proceed to create these coupons in Dodo Payments?',
-                    choices: [
-                        { name: 'Yes', value: 'yes' },
-                        { name: 'No', value: 'no' }
-                    ],
-                });
+                    console.log('\n[LOG] These are the coupons to be migrated:');
+                    dodoDiscounts.forEach((discount, index) => {
+                        const value = `${discount.amount / 100}%`;
+                        const expiry = discount.expires_at ? ` (expires: ${new Date(discount.expires_at).toLocaleDateString()})` : '';
+                        const usage = discount.usage_limit ? ` (max uses: ${discount.usage_limit})` : '';
+                        const duration = discount.duration === 'repeating' && discount.duration_in_months 
+                            ? ` (${discount.duration_in_months} cycles)` 
+                            : discount.duration === 'forever' 
+                                ? ' (forever)' 
+                                : ' (once)';
+                        console.log(`${index + 1}. ${discount.name} (${discount.code}) - ${value}${expiry}${usage}${duration}`);
+                    });
 
-                if (migrateCoupons === 'yes') {
-                    // Track migration results
-                    let successCount = 0;
-                    let failureCount = 0;
+                    // Ask the user for final confirmation before creating the coupons in Dodo Payments
+                    const migrateCoupons = await select({
+                        message: 'Proceed to create these coupons in Dodo Payments?',
+                        choices: [
+                            { name: 'Yes', value: 'yes' },
+                            { name: 'No', value: 'no' }
+                        ],
+                    });
 
-                    // Iterate all the stored coupons and create them in Dodo Payments
-                    for (let coupon of Coupons) {
-                        console.log();
-                        console.log(`[LOG] Migrating coupon: ${coupon.data.name} (${coupon.data.code})`);
-                        try {
-                            // Create the coupon in Dodo Payments
-                            const createdCoupon = await client.discounts.create(coupon.data);
-                            console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
-                            successCount++;
-                        } catch (error) {
-                            console.log(`[ERROR] Failed to migrate coupon: ${coupon.data.name} - ${error}`);
-                            failureCount++;
+                    if (migrateCoupons === 'yes') {
+                        // Track migration results
+                        let successCount = 0;
+                        let failureCount = 0;
+
+                        // Iterate all the stored coupons and create them in Dodo Payments
+                        for (let discount of dodoDiscounts) {
+                            console.log();
+                            console.log(`[LOG] Migrating coupon: ${discount.name} (${discount.code})`);
+                            try {
+                                // Create the coupon in Dodo Payments
+                                const createdCoupon = await client.discounts.create(discount);
+                                console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
+                                successCount++;
+                            } catch (error) {
+                                console.log(`[ERROR] Failed to migrate coupon: ${discount.name} - ${error}`);
+                                failureCount++;
+                            }
                         }
-                    }
 
-                    // Report results based on actual success/failure
-                    if (failureCount === 0) {
-                        console.log('\n[LOG] All coupons migrated successfully!');
-                        completedCoupons = true;
-                    } else if (successCount === 0) {
-                        console.log('\n[ERROR] All coupon migrations failed!');
+                        // Report results based on actual success/failure
+                        if (failureCount === 0) {
+                            console.log('\n[LOG] All coupons migrated successfully!');
+                            completedCoupons = true;
+                        } else if (successCount === 0) {
+                            console.log('\n[ERROR] All coupon migrations failed!');
+                        } else {
+                            console.log(`\n[LOG] Coupon migration completed with ${successCount} successful and ${failureCount} failed migrations.`);
+                        }
                     } else {
-                        console.log(`\n[LOG] Coupon migration completed with ${successCount} successful and ${failureCount} failed migrations.`);
+                        console.log('[LOG] Coupons migration aborted by user');
                     }
                 } else {
-                    console.log('[LOG] Coupons migration aborted by user');
+                    console.log('[LOG] No valid percentage coupons found to migrate');
                 }
-            } else {
-                console.log('[LOG] No valid coupons found to migrate');
+            } catch (error) {
+                console.log("[ERROR] Failed to migrate coupons from Lemon Squeezy!\n", error);
+                process.exit(1);
             }
         }
 
