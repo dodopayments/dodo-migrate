@@ -17,10 +17,10 @@ Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate y
 - [x] Lemon Squeezy
 - [x] Stripe
 - [x] Polar.sh
+- [x] Paddle
 - [ ] Gumroad
 - [ ] 2Checkout
 - [ ] FastSpring
-- [ ] Paddle
 
 **Supported models:**
 - [x] Products
@@ -68,6 +68,10 @@ Migrate from Polar.sh to Dodo Payments:
 ```
 dodo-migrate polar
 ```
+Migrate from Paddle to Dodo Payments:
+```
+dodo-migrate paddle
+```
 You'll be prompted for any missing inputs (API keys, brand selection, environment).
 
 ## CLI reference
@@ -96,6 +100,7 @@ Detailed, provider-specific docs:
 - [Lemon Squeezy → Dodo Payments](./docs/lemonsqueezy/README.md)
 - [Stripe → Dodo Payments](./docs/stripe/README.md)
 - [Polar.sh → Dodo Payments](./docs/polar/README.md)
+- [Paddle → Dodo Payments](./docs/paddle/README.md)
 
 ## Examples
 - Minimal migration from Lemon Squeezy (interactive):
@@ -111,6 +116,11 @@ dodo-migrate stripe
 - Minimal migration from Polar.sh (interactive):
 ```
 dodo-migrate polar
+```
+
+- Minimal migration from Paddle (interactive):
+```
+dodo-migrate paddle
 ```
 
 - Non-interactive run (all flags provided):
@@ -134,6 +144,12 @@ dodo-migrate polar \
   --mode=test_mode \
   --dodo-brand-id=brand_XXXXXX \
   --migrate-types=products,discounts,customers
+
+dodo-migrate paddle \
+  --provider-api-key=paddle_XXXXXXXXXXXXXXXX \
+  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
+  --mode=test_mode \
+  --dodo-brand-id=brand_XXXXXX
 ```
 
 ## Update / Uninstall
