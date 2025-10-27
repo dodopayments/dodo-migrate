@@ -398,6 +398,11 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                 
                 const currency = price.unit_price.currency_code.toUpperCase();
                 
+                // Check if the product/price is tax inclusive
+                // tax_mode: "internal" means tax is included in price (tax-inclusive)
+                // tax_mode: "external" means tax is added on top of price (tax-exclusive)
+                const isTaxInclusive = price.tax_mode === 'internal';
+                
                 if (isRecurring && price.billing_cycle) {
                     // Subscription product
                     const interval = price.billing_cycle.interval;
@@ -418,6 +423,25 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                         continue;
                     }
                     
+                    // Build price object, only include tax_inclusive if true
+                    const priceObject: any = {
+                        currency: currency,
+                        price: unitPrice,
+                        discount: 0,
+                        purchasing_power_parity: false,
+                        type: 'recurring_price',
+                        billing_period: billingPeriod,
+                        payment_frequency_interval: intervalUnit,
+                        payment_frequency_count: frequency,
+                        subscription_period_interval: intervalUnit,
+                        subscription_period_count: frequency
+                    };
+                    
+                    // Only add tax_inclusive field if the product is tax inclusive
+                    if (isTaxInclusive) {
+                        priceObject.tax_inclusive = true;
+                    }
+                    
                     productsToMigrate.push({
                         type: 'subscription_product',
                         paddle_id: product.id,
@@ -425,18 +449,7 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                             name: product.name,
                             description: product.description || '',
                             tax_category: 'saas',
-                            price: {
-                                currency: currency,
-                                price: unitPrice,
-                                discount: 0,
-                                purchasing_power_parity: false,
-                                type: 'recurring_price',
-                                billing_period: billingPeriod,
-                                payment_frequency_interval: intervalUnit,
-                                payment_frequency_count: frequency,
-                                subscription_period_interval: intervalUnit,
-                                subscription_period_count: frequency
-                            },
+                            price: priceObject,
                             brand_id: brand_id,
                             metadata: {
                                 paddle_product_id: product.id,
@@ -447,6 +460,20 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                     });
                 } else {
                     // One-time product
+                    // Build price object, only include tax_inclusive if true
+                    const priceObject: any = {
+                        currency: currency,
+                        price: unitPrice,
+                        discount: 0,
+                        purchasing_power_parity: false,
+                        type: 'one_time_price'
+                    };
+                    
+                    // Only add tax_inclusive field if the product is tax inclusive
+                    if (isTaxInclusive) {
+                        priceObject.tax_inclusive = true;
+                    }
+                    
                     productsToMigrate.push({
                         type: 'one_time_product',
                         paddle_id: product.id,
@@ -454,13 +481,7 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                             name: product.name,
                             description: product.description || '',
                             tax_category: 'saas',
-                            price: {
-                                currency: currency,
-                                price: unitPrice,
-                                discount: 0,
-                                purchasing_power_parity: false,
-                                type: 'one_time_price'
-                            },
+                            price: priceObject,
                             brand_id: brand_id,
                             metadata: {
                                 paddle_product_id: product.id,
@@ -486,10 +507,12 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
             const price = product.data.price.price / 100;
             const type = product.type === 'one_time_product' ? 'One Time' : 'Subscription';
             const billing = product.type === 'subscription_product' ? ` (${product.data.price.billing_period})` : '';
+            const taxStatus = product.data.price.tax_inclusive === true ? 'Tax Inclusive' : 'Tax Exclusive';
             
             console.log(`\n${index + 1}. ${product.data.name}`);
             console.log(`   Type: ${type}${billing}`);
             console.log(`   Price: ${product.data.price.currency} ${price.toFixed(2)}`);
+            console.log(`   Tax Status: ${taxStatus}`);
             console.log(`   Paddle ID: ${product.paddle_id}`);
         });
         

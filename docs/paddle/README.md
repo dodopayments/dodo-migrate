@@ -57,6 +57,7 @@ dodo-migrate paddle --migrate-types=customers,products
 - One-time prices → One-time products in Dodo Payments
 - Recurring prices → Subscription products in Dodo Payments
 - Currency and pricing information
+- Tax-inclusive status (checked from Paddle's tax_mode field)
 - Active products only
 
 **Discounts:**
@@ -125,6 +126,7 @@ dodo-migrate paddle --migrate-types=customers,products
 - **Flat amount discounts**: Paddle supports both percentage and flat amount discounts, but Dodo Payments currently only supports percentage discounts. Flat amount discounts will be skipped during migration.
 - **Product variants**: If a Paddle product has multiple price variants, each variant will be migrated as a separate product in Dodo Payments.
 - **Billing intervals**: Only monthly and yearly billing intervals are supported. Other intervals (weekly, daily) will be skipped.
+- **Tax handling**: The migration checks Paddle's `tax_mode` field to determine tax inclusion. Products with `tax_mode: "internal"` are marked as tax-inclusive, while products with `tax_mode: "external"` are tax-exclusive. Only tax-inclusive products include the `tax_inclusive` field in Dodo Payments.
 
 #### Data Mapping:
 
@@ -133,6 +135,8 @@ dodo-migrate paddle --migrate-types=customers,products
 - Paddle `type: "one_time"` → Dodo `one_time_product`
 - Paddle `billing_cycle.interval: "month"` → Dodo `billing_period: "monthly"`
 - Paddle `billing_cycle.interval: "year"` → Dodo `billing_period: "yearly"`
+- Paddle `tax_mode: "internal"` → Dodo `price.tax_inclusive: true` (tax included in price)
+- Paddle `tax_mode: "external"` → Dodo product without `tax_inclusive` field (tax added on top)
 
 **Discounts:**
 - Paddle `type: "percentage"` → Dodo `type: "percentage"`
