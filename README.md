@@ -13,6 +13,8 @@
 
 Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate your data from popular payment providers into Dodo Payments. Whether you're moving products, customers, or discount codes, Dodo Migrate guides you through a secure, auditable, and repeatable migration process with interactive prompts and sensible defaults.
 
+Note: This tool is currently in Beta and may contain bugs. If you encounter any issues, please inform us promptly. Additionally, after the migration is completed, kindly verify the product information to ensure it has been migrated accurately as it was previously. Should you identify any discrepancies, kindly report them via our [Discord](https://discord.gg/S6kuPSW5Fm) or GitHub issues.
+
 **Supported providers:**
 - [x] Lemon Squeezy
 - [x] Stripe
