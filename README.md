@@ -18,6 +18,7 @@ Note: This tool is currently in Beta and may contain bugs. If you encounter any 
 **Supported providers:**
 - [x] Lemon Squeezy
 - [x] Stripe
+- [x] Cashfree 
 - [x] Polar.sh
 - [x] Paddle
 - [ ] Gumroad
@@ -62,10 +63,15 @@ Migrate from Lemon Squeezy to Dodo Payments:
 ```
 dodo-migrate lemonsqueezy
 ```
+
 Migrate from Stripe to Dodo Payments:
 ```
 dodo-migrate stripe
 ```
+
+Migrate from Cashfree to Dodo Payments:
+```
+dodo-migrate cashfree
 Migrate from Polar.sh to Dodo Payments:
 ```
 dodo-migrate polar
@@ -86,7 +92,7 @@ Options (all optional; interactive prompts will fill in when omitted):
 
 | option | values | description |
 | --- | --- | --- |
-| `--provider-api-key` | string | Provider API key (e.g., Lemon Squeezy) |
+| `--provider-api-key` | string | Provider API key (e.g., Lemon Squeezy / Cashfree) |
 | `--dodo-api-key` | string | Dodo Payments API key |
 | `--mode` | `test_mode` / `live_mode` | Dodo Payments environment (default: `test_mode`) |
 | `--dodo-brand-id` | string | Target Dodo Payments brand ID |
@@ -101,6 +107,7 @@ dodo-migrate lemonsqueezy --help
 Detailed, provider-specific docs:
 - [Lemon Squeezy → Dodo Payments](./docs/lemonsqueezy/README.md)
 - [Stripe → Dodo Payments](./docs/stripe/README.md)
+- [Cashfree → Dodo Payments](./docs/cashfree/README.md)
 - [Polar.sh → Dodo Payments](./docs/polar/README.md)
 - [Paddle → Dodo Payments](./docs/paddle/README.md)
 
@@ -140,6 +147,15 @@ dodo-migrate stripe \
   --dodo-brand-id=brand_XXXXXX \
   --migrate-types=products,coupons
 
+dodo-migrate cashfree \
+  --provider-api-key=CASHFREE_CLIENT_ID \
+  --provider-api-secret=CASHFREE_CLIENT_SECRET \
+  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
+  --mode=test_mode \
+  --dodo-brand-id=brand_XXXXXX \
+  --migrate-types=products,coupons,customers \
+  --cashfree-env=sandbox \
+  --cashfree-api-version=2025-01-01
 dodo-migrate polar \
   --provider-api-key=polar_org_XXXXXXXXXXXXXXXX \
   --dodo-api-key=dp_XXXXXXXXXXXXXXXX \

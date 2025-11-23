@@ -4,6 +4,7 @@ import yargs from 'yargs';
 
 import MigrateLemonSqueezy from './providers/lemonsqueezy';
 import MigrateStripe from './providers/stripe';
+import MigrateCashfree from './providers/cashfree';
 import MigratePolar from './providers/polar';
 import MigratePaddle from './providers/paddle';
 
@@ -33,6 +34,7 @@ yargs(hideBin(process.argv))
     // Add other providers command files after this
     .command(MigrateLemonSqueezy)
     .command(MigrateStripe)
+    .command(MigrateCashfree)
     .command(MigratePolar)
     .command(MigratePaddle)
     .argv;
