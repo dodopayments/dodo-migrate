@@ -1,6 +1,6 @@
 node_modules
 dist
-run.sh
+runs
 .env
 .vscode
 .DS_Store

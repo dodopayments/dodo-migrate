@@ -13,13 +13,17 @@
 
 Dodo Migrate is a CLI tool designed to help you safely and efficiently migrate your data from popular payment providers into Dodo Payments. Whether you're moving products, customers, or discount codes, Dodo Migrate guides you through a secure, auditable, and repeatable migration process with interactive prompts and sensible defaults.
 
+Note: This tool is currently in Beta and may contain bugs. If you encounter any issues, please inform us promptly. Additionally, after the migration is completed, kindly verify the product information to ensure it has been migrated accurately as it was previously. Should you identify any discrepancies, kindly report them via our [Discord](https://discord.gg/S6kuPSW5Fm) or GitHub issues.
+
 **Supported providers:**
 - [x] Lemon Squeezy
 - [x] Stripe
 - [x] Cashfree 
+- [x] Polar.sh
+- [x] Paddle
+- [ ] Gumroad
 - [ ] 2Checkout
 - [ ] FastSpring
-- [ ] Paddle
 
 **Supported models:**
 - [x] Products
@@ -68,6 +72,13 @@ dodo-migrate stripe
 Migrate from Cashfree to Dodo Payments:
 ```
 dodo-migrate cashfree
+Migrate from Polar.sh to Dodo Payments:
+```
+dodo-migrate polar
+```
+Migrate from Paddle to Dodo Payments:
+```
+dodo-migrate paddle
 ```
 You'll be prompted for any missing inputs (API keys, brand selection, environment).
 
@@ -97,6 +108,8 @@ Detailed, provider-specific docs:
 - [Lemon Squeezy → Dodo Payments](./docs/lemonsqueezy/README.md)
 - [Stripe → Dodo Payments](./docs/stripe/README.md)
 - [Cashfree → Dodo Payments](./docs/cashfree/README.md)
+- [Polar.sh → Dodo Payments](./docs/polar/README.md)
+- [Paddle → Dodo Payments](./docs/paddle/README.md)
 
 ## Examples
 - Minimal migration from Lemon Squeezy (interactive):
@@ -107,6 +120,16 @@ dodo-migrate lemonsqueezy
 - Minimal migration from Stripe (interactive):
 ```
 dodo-migrate stripe
+```
+
+- Minimal migration from Polar.sh (interactive):
+```
+dodo-migrate polar
+```
+
+- Minimal migration from Paddle (interactive):
+```
+dodo-migrate paddle
 ```
 
 - Non-interactive run (all flags provided):
@@ -133,6 +156,18 @@ dodo-migrate cashfree \
   --migrate-types=products,coupons,customers \
   --cashfree-env=sandbox \
   --cashfree-api-version=2025-01-01
+dodo-migrate polar \
+  --provider-api-key=polar_org_XXXXXXXXXXXXXXXX \
+  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
+  --mode=test_mode \
+  --dodo-brand-id=brand_XXXXXX \
+  --migrate-types=products,discounts,customers
+
+dodo-migrate paddle \
+  --provider-api-key=paddle_XXXXXXXXXXXXXXXX \
+  --dodo-api-key=dp_XXXXXXXXXXXXXXXX \
+  --mode=test_mode \
+  --dodo-brand-id=brand_XXXXXX
 ```
 
 ## Update / Uninstall

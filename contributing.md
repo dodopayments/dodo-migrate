@@ -33,6 +33,14 @@ Prevent using compilers/runtimes other than NodeJS. This is to make sure it's ea
 
 Please add comments where appropriate to make it easier for further contributors to contribute.
 
+‼️ When working with subscription migration, please make sure the subscription period is 20 years. In many cases, it has been observed that contributors are setting the subscription period same as the subscription interval. This is because it will cause subscriptions to work only 1 time.
+
+```
+Subscription interval = Interval when the subscription will be triggered (example: per month or per year).
+
+Subscription period = Max time after which subscription will automatically be cancelled (example: some large value like 10 years or 20 years).
+```
+
 ## High Level Flow:
 1. User runs the command with or without arguments.
 2. If user doesn't use arguments, ask them for input.
