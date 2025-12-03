@@ -234,6 +234,19 @@ export default {
             for (let discount of validDiscounts) {
                 // Only process percentage discounts - Dodo Payments SDK doesn't support fixed amount discounts
                 if (discount.attributes.amount_type === 'percent') {
+                    let subscriptionCycles: number | null = null;
+                    const lsDuration = discount.attributes.duration;
+
+                if (lsDuration === 'once') {
+                    // "Once" means it applies to 1 cycle
+                    subscriptionCycles = 1;
+                } else if (lsDuration === 'repeating') {
+                    // "Repeating" uses the specific number of months from Lemon Squeezy
+                    subscriptionCycles = discount.attributes.duration_in_months;
+                } else if (lsDuration === 'forever') {
+                    // "Forever" is represented by null or undefined in Dodo
+                    subscriptionCycles = null;
+                }
                     const discountData = {
                         name: discount.attributes.name,
                         code: discount.attributes.code,
@@ -242,7 +255,8 @@ export default {
                         amount: discount.attributes.amount * 100,
                         usage_limit: discount.attributes.is_limited_redemptions ? discount.attributes.max_redemptions : null,
                         expires_at: discount.attributes.expires_at,
-                        brand_id: brand_id
+                        brand_id: brand_id,
+                        subscription_cycles: subscriptionCycles
                     };
 
                     Coupons.push({ data: discountData });
