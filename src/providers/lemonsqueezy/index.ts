@@ -242,7 +242,12 @@ export default {
                     subscriptionCycles = 1;
                 } else if (lsDuration === 'repeating') {
                     // "Repeating" uses the specific number of months from Lemon Squeezy
-                    subscriptionCycles = discount.attributes.duration_in_months;
+                    const durationMonths = discount.attributes.duration_in_months;
+                    if (typeof durationMonths !== 'number' || durationMonths <= 0) {
+                        console.log(`[WARNING] Invalid duration_in_months (${durationMonths}) for discount "${discount.attributes.name}" - skipping`);
+                        continue;
+                    }
+                    subscriptionCycles = durationMonths;
                 } else if (lsDuration === 'forever') {
                     // "Forever" is represented by null or undefined in Dodo
                     subscriptionCycles = null;
