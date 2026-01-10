@@ -32,7 +32,6 @@ export default {
                 describe: 'Types of data to migrate (comma-separated: products,discounts,customers)',
                 type: 'string',
                 demandOption: false,
-                default: 'products,discounts,customers'
             })
             .option('polar-organization-id', {
                 describe: 'Polar.sh Organization ID (if user has multiple orgs)',
@@ -92,7 +91,6 @@ export default {
             ],
             default: 'live_mode'
         });
-
 
         // Initialize Polar SDK with the access token
         const polar = new Polar({
@@ -745,7 +743,6 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
                 metadata: {
                     polar_customer_id: customer.id,              // Original Polar customer ID for reconciliation
                     polar_external_id: customer.externalId || undefined, // Merchant's own system ID (if set in Polar)
-                    polar_metadata: customer.metadata || undefined,      // Custom metadata from Polar (preserved as-is)
                     migrated_from: 'polar',                      // Source system identifier
                     migrated_at: new Date().toISOString()        // Migration timestamp in ISO 8601 format
                 }
