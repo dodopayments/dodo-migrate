@@ -26,13 +26,13 @@ export default {
                 describe: 'Dodo Payments environment',
                 type: 'string',
                 choices: ['test_mode', 'live_mode'],
-                demandOption: false,
-                default: 'test_mode'
+                demandOption: false
             })
             .option('migrate-types', {
                 describe: 'Types of data to migrate (comma-separated: products,discounts,customers)',
                 type: 'string',
-                demandOption: false
+                demandOption: false,
+                default: 'products,discounts,customers'
             })
             .option('polar-organization-id', {
                 describe: 'Polar.sh Organization ID (if user has multiple orgs)',
@@ -49,8 +49,6 @@ export default {
         // Get credentials - either from CLI arguments or interactive prompts
         let PROVIDER_API_KEY = argv['provider-api-key'];
         let DODO_API_KEY = argv['dodo-api-key'];
-        let MODE = argv['mode'] || 'test_mode';
-
         // Validate that all required credentials are provided in non-interactive mode
         if (!PROVIDER_API_KEY) {
             if (!isInteractive) {
@@ -59,7 +57,13 @@ export default {
             }
             PROVIDER_API_KEY = (await password({
                 message: 'Enter your Polar.sh Organization Access Token:',
-                mask: '*'
+                mask: '*',
+                validate: (value: string) => {
+                    if (value.length < 10) {
+                        return 'Invalid Polar.sh Organization Access Token';
+                    }
+                    return true;
+                },
             })).trim();
         }
 
@@ -70,23 +74,25 @@ export default {
             }
             DODO_API_KEY = (await password({
                 message: 'Enter your Dodo Payments API key:',
-                mask: '*'
+                mask: '*',
+                validate: (value: string) => {
+                    if (value.length < 10) {
+                        return 'Invalid Polar.sh Organization Access Token';
+                    }
+                    return true;
+                },
             })).trim();
         }
 
-        if (!MODE || MODE === 'select') {
-            if (!isInteractive) {
-                MODE = 'test_mode'; // Default to test mode in non-interactive
-            } else {
-                MODE = await select({
-                    message: 'Select Dodo Payments environment:',
-                    choices: [
-                        { name: 'Test Mode', value: 'test_mode' },
-                        { name: 'Live Mode', value: 'live_mode' }
-                    ],
-                });
-            }
-        }
+        let MODE = argv['mode'] || await select({
+            message: 'Select Dodo Payments environment:',
+            choices: [
+                { name: 'Test Mode', value: 'test_mode' },
+                { name: 'Live Mode', value: 'live_mode' }
+            ],
+            default: 'live_mode'
+        });
+
 
         // Initialize Polar SDK with the access token
         const polar = new Polar({

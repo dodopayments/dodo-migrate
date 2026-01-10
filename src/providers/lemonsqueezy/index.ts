@@ -29,10 +29,8 @@ export default {
             .option('mode', {
                 describe: 'Dodo Payments environment',
                 type: 'string',
-                // defaults to 'test_mode'
                 choices: ['test_mode', 'live_mode'],
-                demandOption: false,
-                default: 'test_mode'
+                demandOption: false
             })
             .option('types', {
                 describe: 'Migration types (comma-separated)',
