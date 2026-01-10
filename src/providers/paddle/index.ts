@@ -174,8 +174,7 @@ export default {
                 describe: 'Dodo Payments environment',
                 type: 'string',
                 choices: ['test_mode', 'live_mode'],
-                demandOption: false,
-                default: 'test_mode'
+                demandOption: false
             })
             .option('migrate-types', {
                 describe: 'Types of data to migrate (comma-separated: products,discounts,customers)',
