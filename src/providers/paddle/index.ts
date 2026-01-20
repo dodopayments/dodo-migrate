@@ -1,78 +1,7 @@
 import DodoPayments from 'dodopayments';
-import { input, select, checkbox, password } from '@inquirer/prompts';
-
-// Paddle API types based on their API documentation
-interface PaddleProduct {
-    id: string;
-    name: string;
-    description: string | null;
-    type: string;
-    tax_category: string;
-    image_url: string | null;
-    custom_data: object | null;
-    status: string;
-    created_at: string;
-    updated_at: string;
-}
-
-interface PaddlePrice {
-    id: string;
-    product_id: string;
-    description: string | null;
-    type: string;
-    billing_cycle: {
-        interval: string;
-        frequency: number;
-    } | null;
-    trial_period: {
-        interval: string;
-        frequency: number;
-    } | null;
-    tax_mode: string;
-    unit_price: {
-        amount: string;
-        currency_code: string;
-    };
-    unit_price_overrides: any[];
-    quantity: {
-        minimum: number;
-        maximum: number | null;
-    };
-    status: string;
-    custom_data: object | null;
-    import_meta: object | null;
-    created_at: string;
-    updated_at: string;
-}
-
-interface PaddleCustomer {
-    id: string;
-    name: string | null;
-    email: string;
-    marketing_consent: boolean;
-    status: string;
-    custom_data: object | null;
-    locale: string;
-    created_at: string;
-    updated_at: string;
-    import_meta: object | null;
-}
-
-interface PaddleDiscount {
-    id: string;
-    name: string;
-    description: string | null;
-    type: string;
-    amount: string;
-    currency_code: string | null;
-    status: string;
-    usage_limit: number | null;
-    used: number;
-    starts_at: string | null;
-    expires_at: string | null;
-    created_at: string;
-    updated_at: string;
-}
+import { select, checkbox, password } from '@inquirer/prompts';
+import { logger } from '../../utils/logger';
+import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
 
 // Helper function to make Paddle API requests
 async function makePaddleRequest(endpoint: string, apiKey: string, options: RequestInit = {}, environment: 'production' | 'sandbox' = 'production') {
@@ -115,7 +44,7 @@ async function fetchAllPages(endpoint: string, apiKey: string, environment: 'pro
                 allItems.push(...response.data);
                 // Only log if we got items
                 if (response.data.length > 0) {
-                    console.log(`[LOG] Fetched ${response.data.length} items from ${endpoint} (page ${pageIndex + 1})`);
+                    logger.log(`Fetched ${response.data.length} items from ${endpoint} (page ${pageIndex + 1})`);
                 }
             }
 
@@ -135,7 +64,7 @@ async function fetchAllPages(endpoint: string, apiKey: string, environment: 'pro
                 break;
             }
         } catch (error: any) {
-            console.log(`[WARN] Error fetching page ${pageIndex + 1} from ${endpoint}: ${error.message}`);
+            logger.warn(`Error fetching page ${pageIndex + 1} from ${endpoint}: ${error.message}`);
             break;
         }
     }
@@ -183,7 +112,7 @@ export default {
             });
     },
     handler: async (argv: any) => {
-        console.log('[LOG] Starting Paddle to Dodo Payments migration...\n');
+        logger.log('Starting Paddle to Dodo Payments migration...\n');
 
         // Detect if we're in non-interactive mode (CI/CD, automated scripts)
         const isInteractive = process.stdin.isTTY;
@@ -191,13 +120,11 @@ export default {
         // Get credentials - either from CLI arguments or interactive prompts
         let PROVIDER_API_KEY = argv['provider-api-key'];
         let PADDLE_ENV: 'production' | 'sandbox' = argv['paddle-environment'] || 'production';
-        let DODO_API_KEY = argv['dodo-api-key'];
-        let MODE = argv['mode'] || 'test_mode';
 
         // Validate that all required credentials are provided in non-interactive mode
         if (!PROVIDER_API_KEY) {
             if (!isInteractive) {
-                console.log('[ERROR] --provider-api-key required in non-interactive mode');
+                logger.error('--provider-api-key required in non-interactive mode');
                 process.exit(1);
             }
             PROVIDER_API_KEY = (await password({
@@ -211,71 +138,24 @@ export default {
             PADDLE_ENV = 'sandbox';
         }
 
-        if (!DODO_API_KEY) {
-            if (!isInteractive) {
-                console.log('[ERROR] --dodo-api-key required in non-interactive mode');
-                process.exit(1);
-            }
-            DODO_API_KEY = (await password({
-                message: 'Enter your Dodo Payments API key:',
-                mask: '*'
-            })).trim();
-        }
-
-        if (!MODE || MODE === 'select') {
-            if (!isInteractive) {
-                MODE = 'test_mode'; // Default to test mode in non-interactive
-            } else {
-                MODE = await select({
-                    message: 'Select Dodo Payments environment:',
-                    choices: [
-                        { name: 'Test Mode', value: 'test_mode' },
-                        { name: 'Live Mode', value: 'live_mode' }
-                    ],
-                });
-            }
-        }
+        const { apiKey: DODO_API_KEY, mode: MODE } = await getDodoCredentials(argv);
 
         // Test Paddle API connection
         try {
             await makePaddleRequest('/products?per_page=1', PROVIDER_API_KEY, {}, PADDLE_ENV);
-            console.log('[LOG] Successfully connected to Paddle');
+            logger.log('Successfully connected to Paddle');
         } catch (error: any) {
-            console.log('[ERROR] Failed to connect to Paddle!');
-            console.log('[ERROR] Please check your Paddle API key');
-            console.log(`[ERROR] Error details: ${error.message}`);
+            logger.error('Failed to connect to Paddle!');
+            logger.error('Please check your Paddle API key');
+            logger.error(`Error details: ${error.message}`);
             process.exit(1);
         }
 
         // Initialize Dodo Payments SDK
-        const client = new DodoPayments({
-            bearerToken: DODO_API_KEY,
-            environment: MODE,
-        });
+        const client = setupDodoClient(DODO_API_KEY, MODE);
 
         // Select the Dodo Payments brand to migrate to
-        let brand_id = argv['dodo-brand-id'];
-        if (!brand_id) {
-            if (!isInteractive) {
-                console.log('[ERROR] --dodo-brand-id required in non-interactive mode');
-                process.exit(1);
-            }
-
-            try {
-                const brands = await client.brands.list();
-
-                brand_id = await select({
-                    message: 'Select your Dodo Payments brand:',
-                    choices: brands.items.map((brand) => ({
-                        name: brand.name || 'Unnamed Brand',
-                        value: brand.brand_id,
-                    })),
-                });
-            } catch (e) {
-                console.log("[ERROR] Failed to fetch brands from Dodo Payments!\n", e);
-                process.exit(1);
-            }
-        }
+        const brand_id = await selectDodoBrand(client, argv);
 
         // Determine which data types to migrate (products, discounts, customers)
         let migrateTypes: string[] = [];
@@ -285,7 +165,7 @@ export default {
             if (!isInteractive) {
                 // In non-interactive mode, default to products only (safest option)
                 migrateTypes = ['products'];
-                console.log(`[LOG] Non-interactive mode: defaulting to migrate products only`);
+                logger.log(`Non-interactive mode: defaulting to migrate products only`);
             } else {
                 migrateTypes = await checkbox({
                     message: 'Select what you want to migrate:',
@@ -299,15 +179,19 @@ export default {
             }
         }
 
-        console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')}`);
+        logger.log(`Will migrate: ${migrateTypes.join(', ')}`);
 
         // Execute the selected migrations
         let hasFailures = false;
+        const completedMigrations: string[] = [];
 
         if (migrateTypes.includes('products')) {
             const productResult = await migrateProducts(PROVIDER_API_KEY, client, brand_id, PADDLE_ENV);
             if (productResult && productResult.errorCount > 0) {
                 hasFailures = true;
+            }
+            if (productResult && productResult.successCount > 0) {
+                completedMigrations.push('products');
             }
         }
 
@@ -316,6 +200,9 @@ export default {
             if (discountResult && discountResult.errorCount > 0) {
                 hasFailures = true;
             }
+            if (discountResult && discountResult.successCount > 0) {
+                completedMigrations.push('discounts');
+            }
         }
 
         if (migrateTypes.includes('customers')) {
@@ -323,15 +210,20 @@ export default {
             if (customerResult && customerResult.errorCount > 0) {
                 hasFailures = true;
             }
+            if (customerResult && customerResult.successCount > 0) {
+                completedMigrations.push('customers');
+            }
         }
 
         if (hasFailures) {
-            console.log('\n[LOG] Migration completed with some failures. Check the logs above for details.');
-            process.exit(1);
-        } else {
-            console.log('\n[LOG] Migration completed successfully!');
-            process.exit(0);
+            logger.log('\nMigration completed with some failures. Check the logs above for details.');
         }
+
+        if (completedMigrations.length > 0) {
+            logger.success(`Migration completed for: ${completedMigrations.join(', ')}`);
+        }
+
+        process.exit(hasFailures ? 1 : 0);
     }
 };
 
@@ -343,23 +235,23 @@ interface ProductToMigrate {
 }
 
 async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: string, environment: 'production' | 'sandbox') {
-    console.log('\n[LOG] === Starting Products Migration ===');
+    logger.log('\n=== Starting Products Migration ===');
 
     try {
-        console.log('[LOG] Fetching products from Paddle...');
+        logger.log('Fetching products from Paddle...');
         const products = await fetchAllPages('/products', apiKey, environment);
 
         if (products.length === 0) {
-            console.log('[LOG] No products found in Paddle. Skipping products migration.');
+            logger.log('No products found in Paddle. Skipping products migration.');
             return;
         }
 
-        console.log(`[LOG] Found ${products.length} products to migrate`);
+        logger.log(`Found ${products.length} products to migrate`);
 
         // Fetch all prices to associate with products
-        console.log('[LOG] Fetching prices from Paddle...');
+        logger.log('Fetching prices from Paddle...');
         const prices = await fetchAllPages('/prices', apiKey, environment);
-        console.log(`[LOG] Found ${prices.length} prices`);
+        logger.log(`Found ${prices.length} prices`);
 
 
         // Transform Paddle products to Dodo format
@@ -368,7 +260,7 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
         for (const product of products) {
             // Skip archived products
             if (product.status !== 'active') {
-                console.log(`[LOG] Skipping archived product: ${product.name}`);
+                logger.log(`Skipping archived product: ${product.name}`);
                 continue;
             }
 
@@ -376,7 +268,7 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
             const productPrices = prices.filter(price => price.product_id === product.id);
 
             if (productPrices.length === 0) {
-                console.log(`[LOG] Skipping product ${product.name} - no prices found`);
+                logger.log(`Skipping product ${product.name} - no prices found`);
                 continue;
             }
 
@@ -391,7 +283,7 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
 
                 // Validate parsed price amount
                 if (isNaN(unitPrice) || unitPrice < 0) {
-                    console.log(`[WARN] Invalid price amount "${price.unit_price.amount}" for product "${product.name}", skipping.`);
+                    logger.warn(`Invalid price amount "${price.unit_price.amount}" for product "${product.name}", skipping.`);
                     continue;
                 }
 
@@ -418,7 +310,7 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                         billingPeriod = 'yearly';
                         intervalUnit = 'Year';
                     } else {
-                        console.log(`[WARN] Unsupported billing interval "${interval}" for product "${product.name}", skipping.`);
+                        logger.warn(`Unsupported billing interval "${interval}" for product "${product.name}", skipping.`);
                         continue;
                     }
 
@@ -494,13 +386,13 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
         }
 
         if (productsToMigrate.length === 0) {
-            console.log('[LOG] No compatible products found to migrate.');
+            logger.log('No compatible products found to migrate.');
             return;
         }
 
         // Show preview of products that will be migrated
-        console.log('\n[PREVIEW] Products to be migrated:');
-        console.log('=====================================');
+        logger.log('\n[PREVIEW] Products to be migrated:');
+        logger.log('=====================================');
 
         productsToMigrate.forEach((product, index) => {
             const price = product.data.price.price / 100;
@@ -508,14 +400,14 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
             const billing = product.type === 'subscription_product' ? ` (${product.data.price.billing_period})` : '';
             const taxStatus = product.data.price.tax_inclusive === true ? 'Tax Inclusive' : 'Tax Exclusive';
 
-            console.log(`\n${index + 1}. ${product.data.name}`);
-            console.log(`   Type: ${type}${billing}`);
-            console.log(`   Price: ${product.data.price.currency} ${price.toFixed(2)}`);
-            console.log(`   Tax Status: ${taxStatus}`);
-            console.log(`   Paddle ID: ${product.paddle_id}`);
+            logger.log(`\n${index + 1}. ${product.data.name}`);
+            logger.log(`   Type: ${type}${billing}`);
+            logger.log(`   Price: ${product.data.price.currency} ${price.toFixed(2)}`);
+            logger.log(`   Tax Status: ${taxStatus}`);
+            logger.log(`   Paddle ID: ${product.paddle_id}`);
         });
 
-        console.log('\n=====================================');
+        logger.log('\n=====================================');
 
         // Ask for confirmation before creating products
         let shouldProceed = 'yes';
@@ -529,40 +421,40 @@ async function migrateProducts(apiKey: string, client: DodoPayments, brand_id: s
                 ]
             });
         } else {
-            console.log('[LOG] Non-interactive mode: proceeding with products migration automatically');
+            logger.log('Non-interactive mode: proceeding with products migration automatically');
         }
 
         if (shouldProceed !== 'yes') {
-            console.log('[LOG] Products migration cancelled by user.');
+            logger.log('Products migration cancelled by user.');
             return;
         }
 
         // Create products in Dodo Payments
-        console.log('\n[LOG] Starting products migration...');
+        logger.log('\nStarting products migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const product of productsToMigrate) {
             try {
                 const createdProduct = await client.products.create(product.data);
-                console.log(`[SUCCESS] Migrated: ${product.data.name} (Dodo ID: ${createdProduct.product_id})`);
+                logger.success(`Migrated: ${product.data.name} (Dodo ID: ${createdProduct.product_id})`);
                 successCount++;
             } catch (error: any) {
-                console.error(`[ERROR] Failed to migrate product "${product.data.name}": ${error.message}`);
+                logger.error(`Failed to migrate product "${product.data.name}": ${error.message}`);
                 errorCount++;
             }
         }
 
         // Display migration summary
-        console.log('\n[LOG] === Products Migration Complete ===');
-        console.log(`[LOG] Successfully migrated: ${successCount} products`);
+        logger.log('\n=== Products Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} products`);
         if (errorCount > 0) {
-            console.log(`[WARN] Errors encountered: ${errorCount}`);
+            logger.warn(`Errors encountered: ${errorCount}`);
         }
 
         return { successCount, errorCount };
     } catch (error: any) {
-        console.error('[ERROR] Failed to migrate products!', error.message);
+        logger.error('Failed to migrate products!', error.message);
         return { successCount: 0, errorCount: 1 };
     }
 }
@@ -573,18 +465,18 @@ interface DiscountToMigrate {
 }
 
 async function migrateDiscounts(apiKey: string, client: DodoPayments, brand_id: string, environment: 'production' | 'sandbox') {
-    console.log('\n[LOG] === Starting Discounts Migration ===');
+    logger.log('\n=== Starting Discounts Migration ===');
 
     try {
-        console.log('[LOG] Fetching discounts from Paddle...');
+        logger.log('Fetching discounts from Paddle...');
         const discounts = await fetchAllPages('/discounts', apiKey, environment);
 
         if (discounts.length === 0) {
-            console.log('[LOG] No discounts found in Paddle. Skipping discounts migration.');
+            logger.log('No discounts found in Paddle. Skipping discounts migration.');
             return;
         }
 
-        console.log(`[LOG] Found ${discounts.length} discounts to process`);
+        logger.log(`Found ${discounts.length} discounts to process`);
 
         // Transform Paddle discounts to Dodo format
         const discountsToMigrate: DiscountToMigrate[] = [];
@@ -592,19 +484,19 @@ async function migrateDiscounts(apiKey: string, client: DodoPayments, brand_id: 
         for (const discount of discounts) {
             // Skip inactive discounts
             if (discount.status !== 'active') {
-                console.log(`[LOG] Skipping inactive discount: ${discount.code || discount.id}`);
+                logger.log(`Skipping inactive discount: ${discount.code || discount.id}`);
                 continue;
             }
 
             // Skip expired discounts
             if (discount.expires_at && new Date(discount.expires_at) < new Date()) {
-                console.log(`[LOG] Skipping expired discount: ${discount.code || discount.id}`);
+                logger.log(`Skipping expired discount: ${discount.code || discount.id}`);
                 continue;
             }
 
             // Skip discounts without a code (required for Dodo Payments)
             if (!discount.code) {
-                console.log(`[LOG] Skipping discount "${discount.id}" - no code found (required for Dodo Payments)`);
+                logger.log(`Skipping discount "${discount.id}" - no code found (required for Dodo Payments)`);
                 continue;
             }
 
@@ -620,17 +512,17 @@ async function migrateDiscounts(apiKey: string, client: DodoPayments, brand_id: 
 
                 // Validate parsed discount amount
                 if (isNaN(parsedAmount) || parsedAmount < 0 || parsedAmount > 100) {
-                    console.log(`[WARN] Invalid discount amount "${discount.amount}" for discount "${discount.code}", skipping.`);
+                    logger.warn(`Invalid discount amount "${discount.amount}" for discount "${discount.code}", skipping.`);
                     continue;
                 }
 
                 discountValue = Math.round(parsedAmount * 100);
             } else if (discount.type === 'flat') {
                 // Dodo Payments API currently only supports percentage discounts
-                console.log(`[WARN] Skipping flat-amount discount "${discount.code}" - Dodo Payments only supports percentage discounts`);
+                logger.warn(`Skipping flat-amount discount "${discount.code}" - Dodo Payments only supports percentage discounts`);
                 continue;
             } else {
-                console.log(`[WARN] Skipping discount "${discount.code}" - unsupported type: ${discount.type}`);
+                logger.warn(`Skipping discount "${discount.code}" - unsupported type: ${discount.type}`);
                 continue;
             }
 
@@ -654,13 +546,13 @@ async function migrateDiscounts(apiKey: string, client: DodoPayments, brand_id: 
         }
 
         if (discountsToMigrate.length === 0) {
-            console.log('[LOG] No compatible discounts found to migrate.');
+            logger.log('No compatible discounts found to migrate.');
             return;
         }
 
         // Show preview of discounts that will be migrated
-        console.log('\n[PREVIEW] Discounts to be migrated:');
-        console.log('=====================================');
+        logger.log('\n[PREVIEW] Discounts to be migrated:');
+        logger.log('=====================================');
 
         discountsToMigrate.forEach((discount, index) => {
             const value = `${(discount.amount / 100).toFixed(0)}%`;
@@ -673,14 +565,14 @@ async function migrateDiscounts(apiKey: string, client: DodoPayments, brand_id: 
                 ? new Date(discount.expires_at).toLocaleDateString()
                 : 'No expiration';
 
-            console.log(`\n${index + 1}. ${discount.name} (${discount.code})`);
-            console.log(`   Type: ${discount.type}`);
-            console.log(`   Value: ${value}`);
-            console.log(`   Usage Limit: ${usageLimit}`);
-            console.log(`   Expires: ${expiration}`);
+            logger.log(`\n${index + 1}. ${discount.name} (${discount.code})`);
+            logger.log(`   Type: ${discount.type}`);
+            logger.log(`   Value: ${value}`);
+            logger.log(`   Usage Limit: ${usageLimit}`);
+            logger.log(`   Expires: ${expiration}`);
         });
 
-        console.log('\n=====================================');
+        logger.log('\n=====================================');
 
         // Ask for confirmation before creating discounts
         let shouldProceed = 'yes';
@@ -694,40 +586,40 @@ async function migrateDiscounts(apiKey: string, client: DodoPayments, brand_id: 
                 ]
             });
         } else {
-            console.log('[LOG] Non-interactive mode: proceeding with discounts migration automatically');
+            logger.log('Non-interactive mode: proceeding with discounts migration automatically');
         }
 
         if (shouldProceed !== 'yes') {
-            console.log('[LOG] Discounts migration cancelled by user.');
+            logger.log('Discounts migration cancelled by user.');
             return;
         }
 
         // Create discounts in Dodo Payments
-        console.log('\n[LOG] Starting discounts migration...');
+        logger.log('\nStarting discounts migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const discount of discountsToMigrate) {
             try {
                 const createdDiscount = await client.discounts.create(discount as any);
-                console.log(`[SUCCESS] Migrated: ${discount.name} (${discount.code}) (Dodo ID: ${createdDiscount.discount_id})`);
+                logger.success(`Migrated: ${discount.name} (${discount.code}) (Dodo ID: ${createdDiscount.discount_id})`);
                 successCount++;
             } catch (error: any) {
-                console.error(`[ERROR] Failed to migrate discount "${discount.name}" (${discount.code}): ${error.message}`);
+                logger.error(`Failed to migrate discount "${discount.name}" (${discount.code}): ${error.message}`);
                 errorCount++;
             }
         }
 
         // Display migration summary
-        console.log('\n[LOG] === Discounts Migration Complete ===');
-        console.log(`[LOG] Successfully migrated: ${successCount} discounts`);
+        logger.log('\n=== Discounts Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} discounts`);
         if (errorCount > 0) {
-            console.log(`[WARN] Errors encountered: ${errorCount}`);
+            logger.warn(`Errors encountered: ${errorCount}`);
         }
 
         return { successCount, errorCount };
     } catch (error: any) {
-        console.error('[ERROR] Failed to migrate discounts!', error.message);
+        logger.error('Failed to migrate discounts!', error.message);
         return { successCount: 0, errorCount: 1 };
     }
 }
@@ -754,23 +646,23 @@ interface CustomerToMigrate {
 }
 
 async function migrateCustomers(apiKey: string, client: DodoPayments, brand_id: string, environment: 'production' | 'sandbox') {
-    console.log('\n[LOG] === Starting Customers Migration ===');
+    logger.log('\n=== Starting Customers Migration ===');
 
     try {
-        console.log('[LOG] Fetching customers from Paddle...');
+        logger.log('Fetching customers from Paddle...');
         const customers = await fetchAllPages('/customers', apiKey, environment);
 
         if (customers.length === 0) {
-            console.log('[LOG] No customers found in Paddle. Skipping customers migration.');
+            logger.log('No customers found in Paddle. Skipping customers migration.');
             return;
         }
 
-        console.log(`[LOG] Found ${customers.length} customers to process`);
+        logger.log(`Found ${customers.length} customers to process`);
 
         // Fetch all addresses in bulk to avoid N+1 query pattern
-        console.log('[LOG] Fetching customer addresses...');
+        logger.log('Fetching customer addresses...');
         const allAddresses = await fetchAllPages('/addresses', apiKey, environment);
-        console.log(`[LOG] Found ${allAddresses.length} addresses`);
+        logger.log(`Found ${allAddresses.length} addresses`);
 
         // Group addresses by customer ID for efficient lookup
         const addressesByCustomer = new Map<string, any[]>();
@@ -788,13 +680,13 @@ async function migrateCustomers(apiKey: string, client: DodoPayments, brand_id: 
         for (const customer of customers) {
             // Skip customers without email (required field in Dodo)
             if (!customer.email) {
-                console.log(`[LOG] Skipping customer ${customer.id} - no email address`);
+                logger.log(`Skipping customer ${customer.id} - no email address`);
                 continue;
             }
 
             // Skip inactive customers
             if (customer.status !== 'active') {
-                console.log(`[LOG] Skipping inactive customer: ${customer.id}`);
+                logger.log(`Skipping inactive customer: ${customer.id}`);
                 continue;
             }
 
@@ -829,20 +721,20 @@ async function migrateCustomers(apiKey: string, client: DodoPayments, brand_id: 
         }
 
         if (customersToMigrate.length === 0) {
-            console.log('[LOG] No valid customers found to migrate.');
+            logger.log('No valid customers found to migrate.');
             return;
         }
 
         // Show preview of customers that will be migrated
-        console.log('\n[PREVIEW] Customers to be migrated:');
-        console.log('=====================================');
+        logger.log('\n[PREVIEW] Customers to be migrated:');
+        logger.log('=====================================');
 
         customersToMigrate.forEach((customer, index) => {
-            console.log(`\n${index + 1}. ${customer.name || 'Unnamed'}`);
-            console.log(`   Email: ${customer.email}`);
+            logger.log(`\n${index + 1}. ${customer.name || 'Unnamed'}`);
+            logger.log(`   Email: ${customer.email}`);
         });
 
-        console.log('\n=====================================');
+        logger.log('\n=====================================');
 
         // Ask for confirmation before creating customers
         let shouldProceed = 'yes';
@@ -856,40 +748,40 @@ async function migrateCustomers(apiKey: string, client: DodoPayments, brand_id: 
                 ]
             });
         } else {
-            console.log('[LOG] Non-interactive mode: proceeding with customers migration automatically');
+            logger.log('Non-interactive mode: proceeding with customers migration automatically');
         }
 
         if (shouldProceed !== 'yes') {
-            console.log('[LOG] Customers migration cancelled by user.');
+            logger.log('Customers migration cancelled by user.');
             return;
         }
 
         // Create customers in Dodo Payments
-        console.log('\n[LOG] Starting customers migration...');
+        logger.log('\nStarting customers migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const customer of customersToMigrate) {
             try {
                 const createdCustomer = await client.customers.create(customer as any);
-                console.log(`[SUCCESS] Migrated: ${customer.name || customer.email} (Dodo ID: ${createdCustomer.customer_id})`);
+                logger.success(`Migrated: ${customer.name || customer.email} (Dodo ID: ${createdCustomer.customer_id})`);
                 successCount++;
             } catch (error: any) {
-                console.error(`[ERROR] Failed to migrate customer "${customer.name || customer.email}": ${error.message}`);
+                logger.error(`Failed to migrate customer "${customer.name || customer.email}": ${error.message}`);
                 errorCount++;
             }
         }
 
         // Display migration summary
-        console.log('\n[LOG] === Customers Migration Complete ===');
-        console.log(`[LOG] Successfully migrated: ${successCount} customers`);
+        logger.log('\n=== Customers Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} customers`);
         if (errorCount > 0) {
-            console.log(`[WARN] Errors encountered: ${errorCount}`);
+            logger.warn(`Errors encountered: ${errorCount}`);
         }
 
         return { successCount, errorCount };
     } catch (error: any) {
-        console.error('[ERROR] Failed to migrate customers!', error.message);
+        logger.error('Failed to migrate customers!', error.message);
         return { successCount: 0, errorCount: 1 };
     }
 }
