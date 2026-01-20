@@ -1,6 +1,8 @@
 import { Polar } from '@polar-sh/sdk';
 import DodoPayments from 'dodopayments';
-import { input, select, checkbox, password } from '@inquirer/prompts';
+import { select, checkbox, password } from '@inquirer/prompts';
+import { logger } from '../../utils/logger';
+import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
 
 export default {
     command: 'polar [arguments]',
@@ -40,18 +42,17 @@ export default {
             });
     },
     handler: async (argv: any) => {
-        console.log('[LOG] Starting Polar.sh to Dodo Payments migration...\n');
+        logger.log('Starting Polar.sh to Dodo Payments migration...\n');
 
         // Detect if we're in non-interactive mode (CI/CD, automated scripts)
         const isInteractive = process.stdin.isTTY;
 
         // Get credentials - either from CLI arguments or interactive prompts
         let PROVIDER_API_KEY = argv['provider-api-key'];
-        let DODO_API_KEY = argv['dodo-api-key'];
         // Validate that all required credentials are provided in non-interactive mode
         if (!PROVIDER_API_KEY) {
             if (!isInteractive) {
-                console.log('[ERROR] --provider-api-key required in non-interactive mode');
+                logger.error('--provider-api-key required in non-interactive mode');
                 process.exit(1);
             }
             PROVIDER_API_KEY = (await password({
@@ -66,31 +67,7 @@ export default {
             })).trim();
         }
 
-        if (!DODO_API_KEY) {
-            if (!isInteractive) {
-                console.log('[ERROR] --dodo-api-key required in non-interactive mode');
-                process.exit(1);
-            }
-            DODO_API_KEY = (await password({
-                message: 'Enter your Dodo Payments API key:',
-                mask: '*',
-                validate: (value: string) => {
-                    if (value.length < 10) {
-                        return 'Invalid Polar.sh Organization Access Token';
-                    }
-                    return true;
-                },
-            })).trim();
-        }
-
-        let MODE = argv['mode'] || await select({
-            message: 'Select Dodo Payments environment:',
-            choices: [
-                { name: 'Test Mode', value: 'test_mode' },
-                { name: 'Live Mode', value: 'live_mode' }
-            ],
-            default: 'live_mode'
-        });
+        const { apiKey: DODO_API_KEY, mode: MODE } = await getDodoCredentials(argv);
 
         // Initialize Polar SDK with the access token
         const polar = new Polar({
@@ -112,40 +89,37 @@ export default {
                 hasMore = pagination ? page < pagination.maxPage : false;
                 page++;
             }
-            console.log('[LOG] Successfully connected to Polar.sh');
+            logger.log('Successfully connected to Polar.sh');
 
             if (organizations.length === 0) {
-                console.log('[ERROR] No organizations found for this access token');
-                console.log('[ERROR] Please check your Organization Access Token at https://polar.sh/settings/tokens');
+                logger.error('No organizations found for this access token');
+                logger.error('Please check your Organization Access Token at https://polar.sh/settings/tokens');
                 process.exit(1);
             }
         } catch (error: any) {
             // Check for rate limiting (429 Too Many Requests)
             if (error.statusCode === 429 || error.status === 429) {
                 const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                console.log(`[ERROR] Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
+                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
                 process.exit(1);
             }
-            console.log('[ERROR] Failed to connect to Polar.sh');
-            console.log('[ERROR] Please check your Organization Access Token at https://polar.sh/settings/tokens');
+            logger.error('Failed to connect to Polar.sh');
+            logger.error('Please check your Organization Access Token at https://polar.sh/settings/tokens');
             process.exit(1);
         }
 
         // Initialize Dodo Payments SDK
-        const client = new DodoPayments({
-            bearerToken: DODO_API_KEY,
-            environment: MODE,
-        });
+        const client = setupDodoClient(DODO_API_KEY, MODE);
 
         // Select the Polar.sh organization to migrate from
         let organization_id = argv['polar-organization-id'];
         if (!organization_id) {
             if (organizations.length === 1) {
                 organization_id = organizations[0].id;
-                console.log(`[LOG] Using organization: ${organizations[0].name}`);
+                logger.log(`Using organization: ${organizations[0].name}`);
             } else {
                 if (!isInteractive) {
-                    console.log('[ERROR] Multiple Polar.sh organizations detected. Please provide --polar-organization-id flag.');
+                    logger.error('Multiple Polar.sh organizations detected. Please provide --polar-organization-id flag.');
                     process.exit(1);
                 }
                 organization_id = await select({
@@ -159,28 +133,7 @@ export default {
         }
 
         // Select the Dodo Payments brand to migrate to
-        let brand_id = argv['dodo-brand-id'];
-        if (!brand_id) {
-            if (!isInteractive) {
-                console.log('[ERROR] --dodo-brand-id required in non-interactive mode');
-                process.exit(1);
-            }
-
-            try {
-                const brands = await client.brands.list();
-
-                brand_id = await select({
-                    message: 'Select your Dodo Payments brand:',
-                    choices: brands.items.map((brand) => ({
-                        name: brand.name || 'Unnamed Brand',
-                        value: brand.brand_id,
-                    })),
-                });
-            } catch (e) {
-                console.log("[ERROR] Failed to fetch brands from Dodo Payments!\n", e);
-                process.exit(1);
-            }
-        }
+        const brand_id = await selectDodoBrand(client, argv);
 
         // Determine which data types to migrate (products, discounts, customers)
         let migrateTypes: string[] = [];
@@ -191,7 +144,7 @@ export default {
                 // In non-interactive mode, default to products and discounts (safest option)
 
                 migrateTypes = ['products', 'discounts'];
-                console.log(`[LOG] Non-interactive mode: defaulting to migrate products and discounts`);
+                logger.log(`Non-interactive mode: defaulting to migrate products and discounts`);
             } else {
                 migrateTypes = await checkbox({
                     message: 'Select what you want to migrate:',
@@ -205,22 +158,29 @@ export default {
             }
         }
 
-        console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')}`);
+        logger.log(`Will migrate: ${migrateTypes.join(', ')}`);
 
         // Execute the selected migrations
+        const completedMigrations: string[] = [];
+
         if (migrateTypes.includes('products')) {
-            await migrateProducts(polar, client, organization_id, brand_id);
+            const completed = await migrateProducts(polar, client, organization_id, brand_id);
+            if (completed) completedMigrations.push('products');
         }
 
         if (migrateTypes.includes('discounts')) {
-            await migrateDiscounts(polar, client, organization_id, brand_id);
+            const completed = await migrateDiscounts(polar, client, organization_id, brand_id);
+            if (completed) completedMigrations.push('discounts');
         }
 
         if (migrateTypes.includes('customers')) {
-            await migrateCustomers(polar, client, organization_id, brand_id);
+            const completed = await migrateCustomers(polar, client, organization_id, brand_id);
+            if (completed) completedMigrations.push('customers');
         }
 
-        console.log('\n[LOG] Migration completed successfully!');
+        if (completedMigrations.length > 0) {
+            logger.success(`Migration completed for: ${completedMigrations.join(', ')}`);
+        }
 
         // Exit with success code (important for CI/CD pipelines)
         process.exit(0);
@@ -235,11 +195,11 @@ interface ProductToMigrate {
     benefits: Array<{ description: string }>;
 }
 
-async function migrateProducts(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string) {
-    console.log('\n[LOG] === Starting Products Migration ===');
+async function migrateProducts(polar: Polar, client: any, organization_id: string, brand_id: string): Promise<boolean> {
+    logger.log('\n=== Starting Products Migration ===');
 
     try {
-        console.log('[LOG] Fetching products from Polar.sh...');
+        logger.log('Fetching products from Polar.sh...');
         const products: any[] = [];
         try {
             let page = 1;
@@ -257,18 +217,18 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
             // Check for rate limiting (429 Too Many Requests)
             if (error.statusCode === 429 || error.status === 429) {
                 const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                console.log(`[ERROR] Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
+                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
                 process.exit(1);
             }
             throw error;
         }
 
         if (products.length === 0) {
-            console.log('[LOG] No products found in Polar.sh. Skipping products migration.');
-            return;
+            logger.log('No products found in Polar.sh. Skipping products migration.');
+            return false;
         }
 
-        console.log(`[LOG] Found ${products.length} products to migrate`);
+        logger.log(`Found ${products.length} products to migrate`);
 
         // Transform Polar products to Dodo format
         const productsToMigrate: ProductToMigrate[] = [];
@@ -276,14 +236,14 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
         for (const product of products) {
             // Warn if product has benefits (license keys, GitHub access, etc.) that can't be migrated
             if (product.benefits && product.benefits.length > 0) {
-                console.log(`[WARN] Product "${product.name}" has ${product.benefits.length} benefits that require manual setup.`);
+                logger.warn(`Product "${product.name}" has ${product.benefits.length} benefits that require manual setup.`);
             }
 
             // Process each price variant in the product
             const prices = product.prices || [];
 
             if (prices.length === 0) {
-                console.log(`[WARN] Product "${product.name}" has no prices, skipping.`);
+                logger.warn(`Product "${product.name}" has no prices, skipping.`);
                 continue;
             }
 
@@ -303,7 +263,7 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
                 // Filter: Only migrate fixed-amount prices (skip pay-what-you-want and metered)
                 // Polar supports 'fixed', 'custom' (PWYW), 'free', 'metered_unit' pricing
                 if (price.amountType !== 'fixed') {
-                    console.log(`[WARN] Skipping non-fixed price (${price.amountType}) for product "${product.name}"`);
+                    logger.warn(`Skipping non-fixed price (${price.amountType}) for product "${product.name}"`);
                     continue;
                 }
 
@@ -330,7 +290,7 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
                     } else if (recurringInterval === 'year') {
                         billingPeriod = 'yearly';
                     } else {
-                        console.log(`[WARN] Unsupported recurring interval "${recurringInterval}" for product "${product.name}", skipping.`);
+                        logger.warn(`Unsupported recurring interval "${recurringInterval}" for product "${product.name}", skipping.`);
                         continue;
                     }
 
@@ -387,33 +347,33 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
         }
 
         if (productsToMigrate.length === 0) {
-            console.log('[LOG] No compatible products found to migrate.');
-            return;
+            logger.log('No compatible products found to migrate.');
+            return false;
         }
 
         // Show preview of products that will be migrated
-        console.log('\n[PREVIEW] Products to be migrated:');
-        console.log('=====================================');
+        logger.log('\n[PREVIEW] Products to be migrated:');
+        logger.log('=====================================');
 
         productsToMigrate.forEach((product, index) => {
             const price = product.data.price.price / 100;
             const type = product.type === 'one_time_product' ? 'One Time' : 'Subscription';
             const billing = product.type === 'subscription_product' ? ` (${product.data.price.billing_period})` : '';
 
-            console.log(`\n${index + 1}. ${product.data.name}`);
-            console.log(`   Type: ${type}${billing}`);
-            console.log(`   Price: ${product.data.price.currency} ${price.toFixed(2)}`);
-            console.log(`   Polar ID: ${product.polar_id}`);
+            logger.log(`\n${index + 1}. ${product.data.name}`);
+            logger.log(`   Type: ${type}${billing}`);
+            logger.log(`   Price: ${product.data.price.currency} ${price.toFixed(2)}`);
+            logger.log(`   Polar ID: ${product.polar_id}`);
 
             if (product.benefits.length > 0) {
-                console.log(`   ⚠️  Benefits (${product.benefits.length}): Requires manual setup`);
+                logger.log(`   ⚠️  Benefits (${product.benefits.length}): Requires manual setup`);
                 product.benefits.forEach((benefit, idx) => {
-                    console.log(`     ${idx + 1}. ${benefit.description}`);
+                    logger.log(`     ${idx + 1}. ${benefit.description}`);
                 });
             }
         });
 
-        console.log('\n=====================================');
+        logger.log('\n=====================================');
 
         // Ask for confirmation before creating products
         let shouldProceed = 'yes';
@@ -427,39 +387,41 @@ async function migrateProducts(polar: Polar, client: DodoPayments, organization_
                 ]
             });
         } else {
-            console.log('[LOG] Non-interactive mode: proceeding with products migration automatically');
+            logger.log('Non-interactive mode: proceeding with products migration automatically');
         }
 
         if (shouldProceed !== 'yes') {
-            console.log('[LOG] Products migration cancelled by user.');
-            return;
+            logger.log('Products migration cancelled by user.');
+            return false;
         }
 
         // Create products in Dodo Payments
-        console.log('\n[LOG] Starting products migration...');
+        logger.log('\n[LOG] Starting products migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const product of productsToMigrate) {
             try {
                 const createdProduct = await client.products.create(product.data);
-                console.log(`[SUCCESS] Migrated: ${product.data.name} (Dodo ID: ${createdProduct.product_id})`);
+                logger.success(`Migrated: ${product.data.name} (Dodo ID: ${createdProduct.product_id})`);
                 successCount++;
             } catch (error: any) {
                 // Continue migrating other products even if one fails
-                console.error(`[ERROR] Failed to migrate product "${product.data.name}": ${error.message}`);
+                logger.error(`Failed to migrate product "${product.data.name}": ${error.message}`);
                 errorCount++;
             }
         }
 
         // Display migration summary
-        console.log('\n[LOG] === Products Migration Complete ===');
-        console.log(`[LOG] Successfully migrated: ${successCount} products`);
+        logger.log('\n=== Products Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} products`);
         if (errorCount > 0) {
-            console.log(`[WARN] Errors encountered: ${errorCount}`);
+            logger.warn(`Errors encountered: ${errorCount}`);
         }
+        return true;
     } catch (error: any) {
-        console.error('[ERROR] Failed to migrate products!', error.message);
+        logger.error('Failed to migrate products!', error.message);
+        return false;
     }
 }
 
@@ -468,11 +430,11 @@ interface DiscountToMigrate {
     [key: string]: any; // Using any to match Stripe provider pattern
 }
 
-async function migrateDiscounts(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string) {
-    console.log('\n[LOG] === Starting Discounts Migration ===');
+async function migrateDiscounts(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string): Promise<boolean> {
+    logger.log('\n[LOG] === Starting Discounts Migration ===');
 
     try {
-        console.log('[LOG] Fetching discounts from Polar.sh...');
+        logger.log('Fetching discounts from Polar.sh...');
         const discounts: any[] = [];
         try {
             let page = 1;
@@ -490,18 +452,18 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
             // Check for rate limiting (429 Too Many Requests)
             if (error.statusCode === 429 || error.status === 429) {
                 const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                console.log(`[ERROR] Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
+                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
                 process.exit(1);
             }
             throw error;
         }
 
         if (discounts.length === 0) {
-            console.log('[LOG] No discounts found in Polar.sh. Skipping discounts migration.');
-            return;
+            logger.log('No discounts found in Polar.sh. Skipping discounts migration.');
+            return false;
         }
 
-        console.log(`[LOG] Found ${discounts.length} discounts to process`);
+        logger.log(`Found ${discounts.length} discounts to process`);
 
         // Transform Polar discounts to Dodo format
         const discountsToMigrate: DiscountToMigrate[] = [];
@@ -509,18 +471,18 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
         for (const discount of discounts) {
             // Skip discounts that have already expired
             if (discount.endsAt && new Date(discount.endsAt) < new Date()) {
-                console.log(`[LOG] Skipping expired discount: ${discount.code}`);
+                logger.log(`Skipping expired discount: ${discount.code}`);
                 continue;
             }
 
             // Warn if discount is restricted to specific products (not supported in Dodo)
             if ('products' in discount && discount.products && discount.products.length > 0) {
-                console.log(`[WARN] Discount "${discount.code}" is restricted to ${discount.products.length} specific products. Product restrictions cannot be migrated to Dodo Payments.`);
+                logger.warn(`Discount "${discount.code}" is restricted to ${discount.products.length} specific products. Product restrictions cannot be migrated to Dodo Payments.`);
             }
 
             // Skip discounts without code
             if (!discount.code) {
-                console.log(`[WARN] Skipping discount without code`);
+                logger.warn(`Skipping discount without code`);
                 continue;
             }
 
@@ -537,10 +499,10 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
             } else if (discount.type === 'fixed') {
                 // Dodo Payments API currently only supports percentage discounts
                 // Fixed-amount discounts cannot be migrated
-                console.log(`[WARN] Skipping fixed-amount discount "${discount.code}" - Dodo Payments only supports percentage discounts`);
+                logger.warn(`Skipping fixed-amount discount "${discount.code}" - Dodo Payments only supports percentage discounts`);
                 continue;
             } else {
-                console.log(`[WARN] Skipping discount "${discount.code}" - unsupported type: ${discount.type}`);
+                logger.warn(`Skipping discount "${discount.code}" - unsupported type: ${discount.type}`);
                 continue;
             }
 
@@ -564,13 +526,13 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
         }
 
         if (discountsToMigrate.length === 0) {
-            console.log('[LOG] No compatible discounts found to migrate.');
-            return;
+            logger.log('No compatible discounts found to migrate.');
+            return false;
         }
 
         // Show preview of discounts that will be migrated
-        console.log('\n[PREVIEW] Discounts to be migrated:');
-        console.log('=====================================');
+        logger.log('\n[PREVIEW] Discounts to be migrated:');
+        logger.log('=====================================');
 
         discountsToMigrate.forEach((discount, index) => {
             // Display percentage value (discount.amount is already in basis points from conversion)
@@ -584,14 +546,14 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
                 ? new Date(discount.expires_at).toLocaleDateString()
                 : 'No expiration';
 
-            console.log(`\n${index + 1}. ${discount.name} (${discount.code})`);
-            console.log(`   Type: ${discount.type}`);
-            console.log(`   Value: ${value}`);
-            console.log(`   Usage Limit: ${usageLimit}`);
-            console.log(`   Expires: ${expiration}`);
+            logger.log(`\n${index + 1}. ${discount.name} (${discount.code})`);
+            logger.log(`   Type: ${discount.type}`);
+            logger.log(`   Value: ${value}`);
+            logger.log(`   Usage Limit: ${usageLimit}`);
+            logger.log(`   Expires: ${expiration}`);
         });
 
-        console.log('\n=====================================');
+        logger.log('\n=====================================');
 
         // Ask for confirmation before creating discounts
         let shouldProceed = 'yes';
@@ -605,39 +567,41 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
                 ]
             });
         } else {
-            console.log('[LOG] Non-interactive mode: proceeding with discounts migration automatically');
+            logger.log('Non-interactive mode: proceeding with discounts migration automatically');
         }
 
         if (shouldProceed !== 'yes') {
-            console.log('[LOG] Discounts migration cancelled by user.');
-            return;
+            logger.log('Discounts migration cancelled by user.');
+            return false;
         }
 
         // Create discounts in Dodo Payments
-        console.log('\n[LOG] Starting discounts migration...');
+        logger.log('\n[LOG] Starting discounts migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const discount of discountsToMigrate) {
             try {
                 const createdDiscount = await client.discounts.create(discount as any);
-                console.log(`[SUCCESS] Migrated: ${discount.name} (${discount.code}) (Dodo ID: ${createdDiscount.discount_id})`);
+                logger.success(`Migrated: ${discount.name} (${discount.code}) (Dodo ID: ${createdDiscount.discount_id})`);
                 successCount++;
             } catch (error: any) {
                 // Continue migrating other discounts even if one fails
-                console.error(`[ERROR] Failed to migrate discount "${discount.name}" (${discount.code}): ${error.message}`);
+                logger.error(`Failed to migrate discount "${discount.name}" (${discount.code}): ${error.message}`);
                 errorCount++;
             }
         }
 
         // Display migration summary
-        console.log('\n[LOG] === Discounts Migration Complete ===');
-        console.log(`[LOG] Successfully migrated: ${successCount} discounts`);
+        logger.log('\n[LOG] === Discounts Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} discounts`);
         if (errorCount > 0) {
-            console.log(`[WARN] Errors encountered: ${errorCount}`);
+            logger.warn(`Errors encountered: ${errorCount}`);
         }
+        return true;
     } catch (error: any) {
-        console.error('[ERROR] Failed to migrate discounts!', error.message);
+        logger.error('Failed to migrate discounts!', error.message);
+        return false;
     }
 }
 
@@ -664,11 +628,11 @@ interface CustomerToMigrate {
     };
 }
 
-async function migrateCustomers(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string) {
-    console.log('\n[LOG] === Starting Customers Migration ===');
+async function migrateCustomers(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string): Promise<boolean> {
+    logger.log('\n[LOG] === Starting Customers Migration ===');
 
     try {
-        console.log('[LOG] Fetching customers from Polar.sh...');
+        logger.log('Fetching customers from Polar.sh...');
         const customers: any[] = [];
         try {
             let page = 1;
@@ -686,18 +650,18 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
             // Check for rate limiting (429 Too Many Requests)
             if (error.statusCode === 429 || error.status === 429) {
                 const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                console.log(`[ERROR] Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
+                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
                 process.exit(1);
             }
             throw error;
         }
 
         if (customers.length === 0) {
-            console.log('[LOG] No customers found in Polar.sh. Skipping customers migration.');
-            return;
+            logger.log('No customers found in Polar.sh. Skipping customers migration.');
+            return false;
         }
 
-        console.log(`[LOG] Found ${customers.length} customers to process`);
+        logger.log(`Found ${customers.length} customers to process`);
 
         // Transform Polar customers to Dodo format
         const customersToMigrate: CustomerToMigrate[] = [];
@@ -705,13 +669,13 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
         for (const customer of customers) {
             // Skip customers without email (required field in Dodo)
             if (!customer.email) {
-                console.log(`[LOG] Skipping customer ${customer.id} - no email address`);
+                logger.log(`Skipping customer ${customer.id} - no email address`);
                 continue;
             }
 
             // Skip customers that have been deleted in Polar
             if (customer.deletedAt) {
-                console.log(`[LOG] Skipping deleted customer: ${customer.id}`);
+                logger.log(`Skipping deleted customer: ${customer.id}`);
                 continue;
             }
 
@@ -752,23 +716,23 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
         }
 
         if (customersToMigrate.length === 0) {
-            console.log('[LOG] No valid customers found to migrate.');
-            return;
+            logger.log('No valid customers found to migrate.');
+            return false;
         }
 
         // Show preview of customers that will be migrated
-        console.log('\n[PREVIEW] Customers to be migrated:');
-        console.log('=====================================');
+        logger.log('\n[PREVIEW] Customers to be migrated:');
+        logger.log('=====================================');
 
         customersToMigrate.forEach((customer, index) => {
-            console.log(`\n${index + 1}. ${customer.name || 'Unnamed'}`);
-            console.log(`   Email: ${customer.email}`);
+            logger.log(`\n${index + 1}. ${customer.name || 'Unnamed'}`);
+            logger.log(`   Email: ${customer.email}`);
             if (customer.address && customer.address.country) {
-                console.log(`   Location: ${customer.address.city || ''}${customer.address.city && customer.address.country ? ', ' : ''}${customer.address.country || ''}`);
+                logger.log(`   Location: ${customer.address.city || ''}${customer.address.city && customer.address.country ? ', ' : ''}${customer.address.country || ''}`);
             }
         });
 
-        console.log('\n=====================================');
+        logger.log('\n=====================================');
 
         // Ask for confirmation before creating customers
         let shouldProceed = 'yes';
@@ -782,37 +746,39 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
                 ]
             });
         } else {
-            console.log('[LOG] Non-interactive mode: proceeding with customers migration automatically');
+            logger.log('Non-interactive mode: proceeding with customers migration automatically');
         }
 
         if (shouldProceed !== 'yes') {
-            console.log('[LOG] Customers migration cancelled by user.');
-            return;
+            logger.log('Customers migration cancelled by user.');
+            return false;
         }
 
         // Create customers in Dodo Payments
-        console.log('\n[LOG] Starting customers migration...');
+        logger.log('\nStarting customers migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const customer of customersToMigrate) {
             try {
                 const createdCustomer = await client.customers.create(customer as any);
-                console.log(`[SUCCESS] Migrated: ${customer.name || customer.email} (Dodo ID: ${createdCustomer.customer_id})`);
+                logger.success(`Migrated: ${customer.name || customer.email} (Dodo ID: ${createdCustomer.customer_id})`);
                 successCount++;
             } catch (error: any) {
-                console.error(`[ERROR] Failed to migrate customer "${customer.name || customer.email}": ${error.message}`);
+                logger.error(`Failed to migrate customer "${customer.name || customer.email}": ${error.message}`);
                 errorCount++;
             }
         }
 
         // Display migration summary
-        console.log('\n[LOG] === Customers Migration Complete ===');
-        console.log(`[LOG] Successfully migrated: ${successCount} customers`);
+        logger.log('\n[LOG] === Customers Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} customers`);
         if (errorCount > 0) {
-            console.log(`[WARN] Errors encountered: ${errorCount}`);
+            logger.warn(`Errors encountered: ${errorCount}`);
         }
+        return true;
     } catch (error: any) {
-        console.error('[ERROR] Failed to migrate customers!', error.message);
+        logger.error('Failed to migrate customers!', error.message);
+        return false;
     }
 }
