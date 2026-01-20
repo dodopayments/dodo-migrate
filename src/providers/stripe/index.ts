@@ -1,6 +1,8 @@
 import Stripe from 'stripe';
 import DodoPayments from 'dodopayments';
 import { input, select, checkbox } from '@inquirer/prompts';
+import { logger } from '../../utils/logger';
+import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
 
 export default {
     command: 'stripe [arguments]',
@@ -39,51 +41,21 @@ export default {
             message: 'Enter your Stripe Secret API Key (sk_...):',
             required: true
         });
-        const DODO_API_KEY = argv['dodo-api-key'] || await input({
-            message: 'Enter your Dodo Payments API Key:',
-            required: true
-        });
-        const MODE = argv['mode'] || await select({
-            message: 'Select Dodo Payments environment:',
-            choices: [
-                { name: 'Test Mode', value: 'test_mode' },
-                { name: 'Live Mode', value: 'live_mode' }
-            ],
-            default: 'test_mode'
-        });
+
+        const { apiKey: DODO_API_KEY, mode: MODE } = await getDodoCredentials(argv);
 
         const stripe = new Stripe(PROVIDER_API_KEY);
 
         try {
             await stripe.accounts.retrieve();
-            console.log('[LOG] Successfully connected to Stripe');
+            logger.log('Successfully connected to Stripe');
         } catch (error: any) {
-            console.log("[ERROR] Failed to connect to Stripe!\n", error.message);
+            logger.error("Failed to connect to Stripe!", error.message);
             process.exit(1);
         }
 
-        const client = new DodoPayments({
-            bearerToken: DODO_API_KEY,
-            environment: MODE,
-        });
-
-        let brand_id = argv['dodo-brand-id'];
-        if (!brand_id) {
-            try {
-                const brands = await client.brands.list();
-
-                brand_id = await select({
-                    message: 'Select your Dodo Payments brand:',
-                    choices: brands.items.map((brand) => ({
-                        name: brand.name || 'Unnamed Brand',
-                        value: brand.brand_id,
-                    })),
-                });
-            } catch (e) {
-                console.log("[ERROR] Failed to fetch brands from Dodo Payments!\n", e);
-                process.exit(1);
-            }
-        }
+        const client = setupDodoClient(DODO_API_KEY, MODE);
+        const brand_id = await selectDodoBrand(client, argv);
 
         let migrateTypes: string[] = [];
         if (argv['migrate-types']) {
@@ -100,26 +72,33 @@ export default {
             });
         }
 
-        console.log(`[LOG] Will migrate: ${migrateTypes.join(', ')}`);
+        logger.log(`Will migrate: ${migrateTypes.join(', ')}`);
+
+        const completedMigrations: string[] = [];
 
         if (migrateTypes.includes('products')) {
-            await migrateProducts(stripe, client, brand_id);
+            const completed = await migrateProducts(stripe, client, brand_id);
+            if (completed) completedMigrations.push('products');
         }
 
         if (migrateTypes.includes('coupons')) {
-            await migrateCoupons(stripe, client, brand_id);
+            const completed = await migrateCoupons(stripe, client, brand_id);
+            if (completed) completedMigrations.push('coupons');
         }
 
         if (migrateTypes.includes('customers')) {
-            await migrateCustomers(stripe, client, brand_id);
+            const completed = await migrateCustomers(stripe, client, brand_id);
+            if (completed) completedMigrations.push('customers');
         }
 
-        console.log('\n[LOG] Migration completed successfully!');
+        if (completedMigrations.length > 0) {
+            logger.success(`Migration completed for: ${completedMigrations.join(', ')}`);
+        }
     }
 };
 
-async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: string) {
-    console.log('\n[LOG] Starting products migration...');
+async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: string): Promise<boolean> {
+    logger.log('\nStarting products migration...');
 
     try {
         const products = await stripe.products.list({
@@ -128,11 +107,11 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
         });
 
         if (products.data.length === 0) {
-            console.log('[LOG] No active products found in Stripe');
-            return;
+            logger.log('No active products found in Stripe');
+            return false;
         }
 
-        console.log(`[LOG] Found ${products.data.length} active products in Stripe`);
+        logger.log(`Found ${products.data.length} active products in Stripe`);
 
         const ProductsToMigrate: { type: 'one_time_product' | 'subscription_product', data: any }[] = [];
 
@@ -143,7 +122,7 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
             });
 
             if (prices.data.length === 0) {
-                console.log(`[LOG] Skipping product ${product.name} - no active prices found`);
+                logger.log(`Skipping product ${product.name} - no active prices found`);
                 continue;
             }
 
@@ -155,7 +134,7 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
                     const intervalCount = 240; // 20 years max subscription period
 
                     if (interval !== 'month' && interval !== 'year') {
-                        console.log(`[ERROR] Unsupported billing interval "${interval}" for product ${product.id}; skipping to avoid creating a wrong plan`);
+                        logger.error(`Unsupported billing interval "${interval}" for product ${product.id}; skipping to avoid creating a wrong plan`);
                         continue;
                     }
 
@@ -223,16 +202,16 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
         }
 
         if (ProductsToMigrate.length === 0) {
-            console.log('[LOG] No products to migrate');
-            return;
+            logger.log('No products to migrate');
+            return false;
         }
 
-        console.log('\n[LOG] These are the products to be migrated:');
+        logger.log('\nThese are the products to be migrated:');
         ProductsToMigrate.forEach((product, index) => {
             const price = product.data.price.price / 100;
             const type = product.type === 'one_time_product' ? 'One Time' : 'Subscription';
             const billing = product.type === 'subscription_product' ? ` (${product.data.price.billing_period})` : '';
-            console.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${price.toFixed(2)} (${type}${billing})`);
+            logger.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${price.toFixed(2)} (${type}${billing})`);
         });
 
         const migrateProducts = await select({
@@ -245,26 +224,29 @@ async function migrateProducts(stripe: Stripe, client: DodoPayments, brand_id: s
 
         if (migrateProducts === 'yes') {
             for (const product of ProductsToMigrate) {
-                console.log(`[LOG] Migrating product: ${product.data.name}`);
+                logger.log(`Migrating product: ${product.data.name}`);
                 try {
                     const createdProduct = await client.products.create(product.data);
-                    console.log(`[LOG] Migration for product: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
+                    logger.success(`Migration for product: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
                 } catch (error: any) {
-                    console.log(`[ERROR] Failed to migrate product: ${product.data.name} - ${error.message}`);
+                    logger.error(`Failed to migrate product: ${product.data.name} - ${error.message}`);
                 }
             }
-            console.log('[LOG] Products migration completed!');
+            logger.success('Products migration completed!');
+            return true;
         } else {
-            console.log('[LOG] Products migration skipped by user');
+            logger.log('Products migration skipped by user');
+            return false;
         }
 
     } catch (error: any) {
-        console.log("[ERROR] Failed to migrate products!\n", error.message);
+        logger.error("Failed to migrate products!", error.message);
+        return false;
     }
 }
 
-async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: string) {
-    console.log('\n[LOG] Starting coupons migration...');
+async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: string): Promise<boolean> {
+    logger.log('\nStarting coupons migration...');
 
     try {
         const coupons = await stripe.coupons.list({
@@ -272,17 +254,17 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
         });
 
         if (coupons.data.length === 0) {
-            console.log('[LOG] No coupons found in Stripe');
-            return;
+            logger.log('No coupons found in Stripe');
+            return false;
         }
 
-        console.log(`[LOG] Found ${coupons.data.length} coupons in Stripe`);
+        logger.log(`Found ${coupons.data.length} coupons in Stripe`);
 
         const CouponsToMigrate: any[] = [];
 
         for (const coupon of coupons.data) {
             if (!coupon.valid) {
-                console.log(`[LOG] Skipping invalid coupon: ${coupon.id}`);
+                logger.log(`Skipping invalid coupon: ${coupon.id}`);
                 continue;
             }
 
@@ -300,22 +282,22 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
                     brand_id: brand_id
                 });
             } else if (coupon.amount_off) {
-                console.log(`[LOG] Skipping coupon ${coupon.id} (${coupon.name || coupon.id}) - Dodo Payments only supports percentage discounts, not fixed amount discounts`);
+                logger.warn(`Skipping coupon ${coupon.id} (${coupon.name || coupon.id}) - Dodo Payments only supports percentage discounts, not fixed amount discounts`);
                 continue;
             } else {
-                console.log(`[LOG] Skipping coupon ${coupon.id} - no discount value found`);
+                logger.warn(`Skipping coupon ${coupon.id} - no discount value found`);
                 continue;
             }
         }
 
         if (CouponsToMigrate.length === 0) {
-            console.log('[LOG] No valid coupons to migrate');
-            return;
+            logger.log('No valid coupons to migrate');
+            return false;
         }
 
-        console.log('\n[LOG] These are the coupons to be migrated:');
+        logger.log('\nThese are the coupons to be migrated:');
         CouponsToMigrate.forEach((coupon, index) => {
-            console.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${coupon.amount / 100}% discount`);
+            logger.log(`${index + 1}. ${coupon.name} (${coupon.code}) - ${coupon.amount / 100}% discount`);
         });
 
         const migrateCoupons = await select({
@@ -328,26 +310,29 @@ async function migrateCoupons(stripe: Stripe, client: DodoPayments, brand_id: st
 
         if (migrateCoupons === 'yes') {
             for (const coupon of CouponsToMigrate) {
-                console.log(`[LOG] Migrating coupon: ${coupon.name} (${coupon.code})`);
+                logger.log(`Migrating coupon: ${coupon.name} (${coupon.code})`);
                 try {
                     const createdCoupon = await client.discounts.create(coupon);
-                    console.log(`[LOG] Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
+                    logger.success(`Migration for coupon: ${createdCoupon.name} completed (Dodo Payments discount ID: ${createdCoupon.discount_id})`);
                 } catch (error: any) {
-                    console.log(`[ERROR] Failed to migrate coupon: ${coupon.name} - ${error.message}`);
+                    logger.error(`Failed to migrate coupon: ${coupon.name} - ${error.message}`);
                 }
             }
-            console.log('[LOG] Coupons migration completed!');
+            logger.success('Coupons migration completed!');
+            return true;
         } else {
-            console.log('[LOG] Coupons migration skipped by user');
+            logger.log('Coupons migration skipped by user');
+            return false;
         }
 
     } catch (error: any) {
-        console.log("[ERROR] Failed to migrate coupons!\n", error.message);
+        logger.error("Failed to migrate coupons!", error.message);
+        return false;
     }
 }
 
-async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: string) {
-    console.log('\n[LOG] Starting customers migration...');
+async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: string): Promise<boolean> {
+    logger.log('\nStarting customers migration...');
 
     try {
         const customers = await stripe.customers.list({
@@ -355,17 +340,17 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
         });
 
         if (customers.data.length === 0) {
-            console.log('[LOG] No customers found in Stripe');
-            return;
+            logger.log('No customers found in Stripe');
+            return false;
         }
 
-        console.log(`[LOG] Found ${customers.data.length} customers in Stripe`);
+        logger.log(`Found ${customers.data.length} customers in Stripe`);
 
         const CustomersToMigrate: any[] = [];
 
         for (const customer of customers.data) {
             if (customer.deleted) {
-                console.log(`[LOG] Skipping deleted customer: ${customer.id}`);
+                logger.log(`Skipping deleted customer: ${customer.id}`);
                 continue;
             }
 
@@ -390,13 +375,13 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
         }
 
         if (CustomersToMigrate.length === 0) {
-            console.log('[LOG] No valid customers to migrate');
-            return;
+            logger.log('No valid customers to migrate');
+            return false;
         }
 
-        console.log('\n[LOG] These are the customers to be migrated:');
+        logger.log('\nThese are the customers to be migrated:');
         CustomersToMigrate.forEach((customer, index) => {
-            console.log(`${index + 1}. ${customer.name || 'Unnamed'} (${customer.email || 'No email'})`);
+            logger.log(`${index + 1}. ${customer.name || 'Unnamed'} (${customer.email || 'No email'})`);
         });
 
         const migrateCustomers = await select({
@@ -409,20 +394,23 @@ async function migrateCustomers(stripe: Stripe, client: DodoPayments, brand_id: 
 
         if (migrateCustomers === 'yes') {
             for (const customer of CustomersToMigrate) {
-                console.log(`[LOG] Migrating customer: ${customer.name || customer.email || 'Unnamed'}`);
+                logger.log(`Migrating customer: ${customer.name || customer.email || 'Unnamed'}`);
                 try {
                     const createdCustomer = await client.customers.create(customer);
-                    console.log(`[LOG] Migration for customer: ${createdCustomer.name || createdCustomer.email} completed (Dodo Payments customer ID: ${createdCustomer.customer_id})`);
+                    logger.success(`Migration for customer: ${createdCustomer.name || createdCustomer.email} completed (Dodo Payments customer ID: ${createdCustomer.customer_id})`);
                 } catch (error: any) {
-                    console.log(`[ERROR] Failed to migrate customer: ${customer.name || customer.email} - ${error.message}`);
+                    logger.error(`Failed to migrate customer: ${customer.name || customer.email} - ${error.message}`);
                 }
             }
-            console.log('[LOG] Customers migration completed!');
+            logger.success('Customers migration completed!');
+            return true;
         } else {
-            console.log('[LOG] Customers migration skipped by user');
+            logger.log('Customers migration skipped by user');
+            return false;
         }
 
     } catch (error: any) {
-        console.log("[ERROR] Failed to migrate customers!\n", error.message);
+        logger.error("Failed to migrate customers!", error.message);
+        return false;
     }
 }
