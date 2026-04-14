@@ -4,6 +4,7 @@ import { select, checkbox, password } from '@inquirer/prompts';
 import { logger } from '../../utils/logger';
 import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
 import { delay, retryWithBackoff, type LicenseKeyToMigrate } from '../../utils/common';
+import { Product } from '@polar-sh/sdk/models/components/product.js';
 
 export default {
     command: 'polar [arguments]',
@@ -149,8 +150,8 @@ export default {
                     choices: [
                         { name: 'Products', value: 'products', checked: true },
                         { name: 'Discounts', value: 'discounts', checked: true },
-                        { name: 'Customers', value: 'customers', checked: false },
-                        { name: 'License Keys', value: 'license_keys', checked: false }
+                        { name: 'Customers', value: 'customers', checked: true },
+                        { name: 'License Keys', value: 'license_keys', checked: true }
                     ],
                     required: true
                 });
@@ -215,7 +216,7 @@ interface ProductToMigrate {
     type: 'one_time_product' | 'subscription_product';
     polar_id: string;
     data: any; // Using any to match Stripe provider pattern
-    benefits: Array<{ description: string }>;
+    benefits: Array<{ description: string, type: 'license_keys' | string }>;
 }
 
 async function migrateProducts(polar: Polar, client: any, organization_id: string, brand_id: string): Promise<{ completed: boolean; idMap: Map<string, string>; benefitToProductMap: Map<string, string> }> {
@@ -225,7 +226,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
 
     try {
         logger.log('Fetching products from Polar.sh...');
-        const products: any[] = [];
+        const products: Product[] = [];
         let page = 1;
         let hasMore = true;
         while (hasMore) {
@@ -256,12 +257,17 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
             // Build benefit→product reverse map for license key resolution
             if (product.benefits && product.benefits.length > 0) {
                 for (const benefit of product.benefits) {
-                    if (benefit.id) {
-                        benefitToProductMap.set(benefit.id, product.id);
-                    }
+                    benefitToProductMap.set(benefit.id, product.id);
                 }
-                logger.warn(`Product "${product.name}" has ${product.benefits.length} benefits that require manual setup.`);
             }
+
+            const manualBenefits = product.benefits.filter(e => e.type !== 'license_keys');
+            if (manualBenefits.length > 0) {
+                logger.warn(`Product "${product.name}" has ${manualBenefits.length} benefits that require manual setup.`);
+            }
+
+            // Enable licence key generation for Dodo Payments product if the product is configured with license generation on Polar
+            const isLicenseKeyEnabled = product.benefits.some(e => e.type === 'license_keys');
 
             // Process each price variant in the product
             const prices = product.prices || [];
@@ -330,6 +336,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
                             name: variantName,
                             description: product.description || '',
                             tax_category: 'saas',
+                            license_key_enabled: isLicenseKeyEnabled,
                             price: {
                                 currency: priceCurrency.toUpperCase(),
                                 price: priceAmount,
@@ -344,7 +351,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
                             },
                             brand_id: brand_id
                         },
-                        benefits: (product.benefits || []).map((b: any) => ({ description: b.description }))
+                        benefits: (product.benefits || []).map((b: any) => ({ description: b.description, type: b.type }))
                     });
                 } else {
                     // One-time product
@@ -355,6 +362,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
                             name: variantName,
                             description: product.description || '',
                             tax_category: 'saas',
+                            license_key_enabled: isLicenseKeyEnabled,
                             price: {
                                 currency: priceCurrency.toUpperCase(),
                                 price: priceAmount,
@@ -364,7 +372,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
                             },
                             brand_id: brand_id
                         },
-                        benefits: (product.benefits || []).map((b: any) => ({ description: b.description }))
+                        benefits: (product.benefits || []).map((b: any) => ({ description: b.description, type: b.type }))
                     });
                 }
             }
@@ -389,7 +397,8 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
             logger.log(`   Price: ${product.data.price.currency} ${price.toFixed(2)}`);
             logger.log(`   Polar ID: ${product.polar_id}`);
 
-            if (product.benefits.length > 0) {
+            // Filter the license key benefits since that's managed by us
+            if (product.benefits.filter(e => e.type !== 'license_keys').length > 0) {
                 logger.log(`   ⚠️  Benefits (${product.benefits.length}): Requires manual setup`);
                 product.benefits.forEach((benefit, idx) => {
                     logger.log(`     ${idx + 1}. ${benefit.description}`);
@@ -430,6 +439,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
                     migrated_from: 'polar',
                     migrated_at: new Date().toISOString()
                 };
+
                 const createdProduct = await client.products.create(product.data);
                 if (!idMap.has(product.polar_id)) {
                     idMap.set(product.polar_id, createdProduct.product_id);
