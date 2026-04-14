@@ -3,6 +3,11 @@ import { input, select, checkbox } from '@inquirer/prompts';
 import { logger } from '../../utils/logger';
 import { delay, type LicenseKeyToMigrate } from '../../utils/common';
 import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
+import { ProductCreateParams } from 'dodopayments/resources';
+import { Product } from 'dodopayments/resources.js';
+
+// This will be used for caching product information when required
+const DodoPaymentsProductCache: Record<string, Product> = {};
 
 export default {
     // Format: dodo-migrate [provider] [arguments]
@@ -81,7 +86,7 @@ export default {
         // I've cached this object to prevent rate limiting issues when dealing with multiple Lemon Squeezy products.
         const StoresData: Record<string, Store> = {};
 
-        const Products: { type: 'one_time_product', data: any, ls_product_id: string }[] = [];
+        const Products: { type: 'one_time_product', data: ProductCreateParams, ls_product_id: string }[] = [];
         const Coupons: { data: any }[] = [];
 
         let completedProducts = false;
@@ -158,14 +163,14 @@ export default {
                             ls_product_id: String(product.id),
                             migrated_from: 'lemonsqueezy',
                             migrated_at: new Date().toISOString()
-                        }
+                        },
                     }
                 });
             }
 
             logger.log('These are the products to be migrated:');
             Products.forEach((product, index) => {
-                logger.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${(product.data.price.price / 100).toFixed(2)} (${product.type === 'one_time_product' ? 'One Time' : 'Unknown'})`);
+                logger.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${((product.data.price as any).price / 100).toFixed(2)} (${product.type === 'one_time_product' ? 'One Time' : 'Unknown'})`);
             });
 
             // Ask the user for final confirmation before creating the products in Dodo Payments
@@ -491,7 +496,30 @@ export default {
 
                         for (const lk of licenseKeysToMigrate) {
                             await delay(100);
+
+                            // What I'm doing here is retriving the product info and caching it to prevent more reads
                             try {
+                                let product_info: Product;
+                                if (DodoPaymentsProductCache[lk.dodo_product_id]) {
+                                    product_info = DodoPaymentsProductCache[lk.dodo_product_id];
+                                } else {
+                                    const dodoProductData = await client.products.retrieve(lk.dodo_product_id);
+                                    DodoPaymentsProductCache[lk.dodo_product_id] = dodoProductData;
+                                    product_info = dodoProductData;
+                                }
+
+                                // Enable license key for the product so otherwise the migration will fail + update the cache
+                                // The reason I'm manually updating the product here is that LemonSqueezy doesn't provide a way to check if a product generates license key or not
+                                if (!product_info.license_key_enabled) {
+                                    await client.products.update(lk.dodo_product_id, {
+                                        license_key_enabled: true
+                                    });
+
+                                    logger.log(`Updating created product ${product_info.name} to enable license mode`);
+
+                                    DodoPaymentsProductCache[lk.dodo_product_id].license_key_enabled = true;
+                                }
+
                                 const created = await client.licenseKeys.create({
                                     key: lk.key,
                                     customer_id: lk.dodo_customer_id,
