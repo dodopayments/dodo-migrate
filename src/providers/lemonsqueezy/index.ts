@@ -1,7 +1,7 @@
-import { listProducts, lemonSqueezySetup, getStore, Store, listDiscounts, listCustomers } from '@lemonsqueezy/lemonsqueezy.js';
+import { listProducts, lemonSqueezySetup, getStore, Store, listDiscounts, listCustomers, listLicenseKeys } from '@lemonsqueezy/lemonsqueezy.js';
 import { input, select, checkbox } from '@inquirer/prompts';
 import { logger } from '../../utils/logger';
-import { delay } from '../../utils/common';
+import { delay, type LicenseKeyToMigrate } from '../../utils/common';
 import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
 
 export default {
@@ -54,7 +54,8 @@ export default {
                 choices: [
                     { name: 'Products', value: 'products', checked: true },
                     { name: 'Coupons/Discounts', value: 'coupons', checked: true },
-                    { name: 'Customers', value: 'customers', checked: true }
+                    { name: 'Customers', value: 'customers', checked: true },
+                    { name: 'License Keys', value: 'license_keys', checked: false }
                 ],
                 required: true
             });
@@ -80,16 +81,16 @@ export default {
         // I've cached this object to prevent rate limiting issues when dealing with multiple Lemon Squeezy products.
         const StoresData: Record<string, Store> = {};
 
-        // This will be the array of products to be created in Dodo Payments
-        const Products: { type: 'one_time_product', data: any }[] = [];
-
-        // This will be the array of coupons to be created in Dodo Payments
+        const Products: { type: 'one_time_product', data: any, ls_product_id: string }[] = [];
         const Coupons: { data: any }[] = [];
 
-        // Track actual completion state for each migration branch
         let completedProducts = false;
         let completedCoupons = false;
         let completedCustomers = false;
+        let completedLicenseKeys = false;
+
+        const productIdMap = new Map<string, string>();
+        const customerIdMap = new Map<string, string>();
 
         // Migrate products if selected
         if (migrationTypes.includes('products')) {
@@ -131,9 +132,9 @@ export default {
                     StoreData = StoresData[product.attributes.store_id];
                 }
 
-                // Store the product data in the Products array to be created later in Dodo Payments
                 Products.push({
                     type: 'one_time_product',
+                    ls_product_id: String(product.id),
                     data: {
                         name: product.attributes.name,
                         tax_category: 'saas',
@@ -144,7 +145,12 @@ export default {
                             purchasing_power_parity: false,
                             type: 'one_time_price'
                         },
-                        brand_id: brand_id
+                        brand_id: brand_id,
+                        metadata: {
+                            ls_product_id: String(product.id),
+                            migrated_from: 'lemonsqueezy',
+                            migrated_at: new Date().toISOString()
+                        }
                     }
                 });
             }
@@ -164,17 +170,13 @@ export default {
             });
 
             if (migrateProducts === 'yes') {
-                // Iterate all the stored products and create them in Dodo Payments
                 for (let product of Products) {
-                    // Blank line for better readability in logs
                     logger.log('');
-                    // If the product type is one_time_product, invoke the client.products.create method
                     if (product.type === 'one_time_product') {
                         logger.log(`Migrating product: ${product.data.name}`);
-                        // Create the product in Dodo Payments
-                        // 10 req/s = 100ms delay
                         await delay(100);
                         const createdProduct = await client.products.create(product.data);
+                        productIdMap.set(product.ls_product_id, createdProduct.product_id);
                         logger.success(`Migration for product: ${createdProduct.name} completed (Dodo Payments product ID: ${createdProduct.product_id})`);
                     } else {
                         logger.log(`Skipping product: ${product.data.name} for unknown product type (example one time, subscription, etc)`);
@@ -336,7 +338,8 @@ export default {
                 }
 
                 // Iterate through all the pages of customers
-                while (currentPage <= customers.data?.meta.page.lastPage!) {
+                const lastPage = customers.data?.meta?.page?.lastPage ?? 1;
+                while (currentPage <= lastPage) {
                     // Fetch the next page of customers
                     // 5 req/s = 200ms delay
                     await delay(200);
@@ -353,12 +356,12 @@ export default {
                     }
 
                     for (const user of customersNew.data.data) {
-                        // 10 req/s = 100ms delay
                         await delay(100);
-                        await client.customers.create({
+                        const createdCustomer = await client.customers.create({
                             name: user.attributes.name!,
                             email: user.attributes.email!
                         });
+                        customerIdMap.set(user.attributes.email!, createdCustomer.customer_id);
                     }
 
                     currentPage++;
@@ -369,11 +372,150 @@ export default {
             }
         }
 
-        // Final completion message
+        if (migrationTypes.includes('license_keys')) {
+            if (productIdMap.size === 0 || customerIdMap.size === 0) {
+                logger.error('License key migration requires products and customers to be migrated in the same session.');
+                logger.error('Please re-run with products, customers, and license_keys selected.');
+            } else {
+                logger.log('\nStarting license keys migration...');
+
+                let currentLicensePage = 1;
+                let hasMoreLicenses = true;
+                const allLicenseKeys: any[] = [];
+
+                while (hasMoreLicenses) {
+                    await delay(200);
+                    const licenseKeysResponse = await listLicenseKeys({
+                        page: { number: currentLicensePage, size: 100 }
+                    });
+
+                    if (licenseKeysResponse.error || licenseKeysResponse.statusCode !== 200) {
+                        logger.error("Failed to fetch license keys from Lemon Squeezy!", licenseKeysResponse.error);
+                        break;
+                    }
+
+                    if (licenseKeysResponse.data?.data?.length) {
+                        allLicenseKeys.push(...licenseKeysResponse.data.data);
+                    }
+
+                    const lastPage = licenseKeysResponse.data?.meta?.page?.lastPage ?? currentLicensePage;
+                    hasMoreLicenses = currentLicensePage < lastPage;
+                    currentLicensePage++;
+                }
+
+                logger.log(`Found ${allLicenseKeys.length} license keys in Lemon Squeezy`);
+
+                const licenseKeysToMigrate: LicenseKeyToMigrate[] = [];
+                let skippedCount = 0;
+
+                for (const lk of allLicenseKeys) {
+                    const attrs = lk.attributes;
+
+                    if (attrs.disabled === 1 || attrs.status === 'disabled') {
+                        logger.log(`Skipping disabled license key: ${lk.id}`);
+                        skippedCount++;
+                        continue;
+                    }
+
+                    if (attrs.status === 'expired') {
+                        logger.log(`Skipping expired license key: ${lk.id}`);
+                        skippedCount++;
+                        continue;
+                    }
+
+                    const dodoProductId = productIdMap.get(String(attrs.product_id));
+                    if (!dodoProductId) {
+                        logger.warn(`License key ${lk.id}: no matching Dodo product for LS product ${attrs.product_id}. Skipping.`);
+                        skippedCount++;
+                        continue;
+                    }
+
+                    const dodoCustomerId = customerIdMap.get(attrs.user_email);
+                    if (!dodoCustomerId) {
+                        logger.warn(`License key ${lk.id}: no matching Dodo customer for email ${attrs.user_email}. Skipping.`);
+                        skippedCount++;
+                        continue;
+                    }
+
+                    const activationsLimit = attrs.activation_limit === 0 ? null : attrs.activation_limit;
+
+                    licenseKeysToMigrate.push({
+                        key: attrs.key,
+                        dodo_customer_id: dodoCustomerId,
+                        dodo_product_id: dodoProductId,
+                        activations_limit: activationsLimit,
+                        expires_at: attrs.expires_at || null,
+                        source_key_id: String(lk.id),
+                        display_key: `****${attrs.key.slice(-6)}`,
+                        product_name: `Product ${attrs.product_id}`,
+                        customer_email: attrs.user_email
+                    });
+                }
+
+                if (licenseKeysToMigrate.length === 0) {
+                    logger.log('No valid license keys found to migrate.');
+                } else {
+                    logger.log('\nThese are the license keys to be migrated:');
+                    licenseKeysToMigrate.forEach((lk, index) => {
+                        const limit = lk.activations_limit !== null ? `${lk.activations_limit} activations` : 'Unlimited';
+                        const expiry = lk.expires_at ? new Date(lk.expires_at).toLocaleDateString() : 'Never';
+                        logger.log(`${index + 1}. ${lk.display_key} - ${lk.customer_email} - ${limit} - Expires: ${expiry}`);
+                    });
+
+                    if (skippedCount > 0) {
+                        logger.warn(`${skippedCount} license keys were skipped (disabled/expired/unmapped)`);
+                    }
+
+                    const migrateLicenseKeysConfirm = await select({
+                        message: `Proceed to create ${licenseKeysToMigrate.length} license keys in Dodo Payments?`,
+                        choices: [
+                            { name: 'Yes', value: 'yes' },
+                            { name: 'No', value: 'no' }
+                        ],
+                    });
+
+                    if (migrateLicenseKeysConfirm === 'yes') {
+                        let lkSuccessCount = 0;
+                        let lkFailureCount = 0;
+
+                        for (const lk of licenseKeysToMigrate) {
+                            await delay(100);
+                            try {
+                                const created = await client.licenseKeys.create({
+                                    key: lk.key,
+                                    customer_id: lk.dodo_customer_id,
+                                    product_id: lk.dodo_product_id,
+                                    activations_limit: lk.activations_limit,
+                                    expires_at: lk.expires_at,
+                                });
+                                logger.success(`Migrated license key: ${lk.display_key} (Dodo ID: ${created.id})`);
+                                lkSuccessCount++;
+                            } catch (error: any) {
+                                if (error.status === 409) {
+                                    logger.warn(`License key ${lk.display_key} already exists in Dodo. Skipping.`);
+                                } else {
+                                    logger.error(`Failed to migrate license key ${lk.display_key}: ${error.message}`);
+                                }
+                                lkFailureCount++;
+                            }
+                        }
+
+                        logger.log(`\nLicense keys migration complete: ${lkSuccessCount} succeeded, ${lkFailureCount} failed`);
+                        if (lkSuccessCount > 0) {
+                            completedLicenseKeys = true;
+                        }
+                    } else {
+                        logger.log('License keys migration aborted by user');
+                    }
+                }
+            }
+        }
+
         const completedMigrations: string[] = [];
         if (completedProducts) completedMigrations.push('products');
         if (completedCoupons) completedMigrations.push('coupons');
         if (completedCustomers) completedMigrations.push('customers');
+        if (completedLicenseKeys) completedMigrations.push('license_keys');
 
         if (completedMigrations.length > 0) {
             logger.success(`Migration completed for: ${completedMigrations.join(', ')}`);

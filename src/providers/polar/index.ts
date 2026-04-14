@@ -3,6 +3,7 @@ import DodoPayments from 'dodopayments';
 import { select, checkbox, password } from '@inquirer/prompts';
 import { logger } from '../../utils/logger';
 import { getDodoCredentials, setupDodoClient, selectDodoBrand } from '../../utils/dodo';
+import { delay, retryWithBackoff, type LicenseKeyToMigrate } from '../../utils/common';
 
 export default {
     command: 'polar [arguments]',
@@ -31,7 +32,7 @@ export default {
                 demandOption: false
             })
             .option('migrate-types', {
-                describe: 'Types of data to migrate (comma-separated: products,discounts,customers)',
+                describe: 'Types of data to migrate (comma-separated: products,discounts,customers,license_keys)',
                 type: 'string',
                 demandOption: false,
             })
@@ -80,11 +81,14 @@ export default {
             let page = 1;
             let hasMore = true;
             while (hasMore) {
-                const response = await polar.organizations.list({ page });
+                await delay(200);
+                const response = await retryWithBackoff(
+                    () => polar.organizations.list({ page }),
+                    { label: 'polar.organizations.list' }
+                );
                 if (response.result?.items?.length) {
                     organizations.push(...response.result.items);
                 }
-                // Check if there are more pages based on pagination metadata
                 const pagination = response.result?.pagination;
                 hasMore = pagination ? page < pagination.maxPage : false;
                 page++;
@@ -97,12 +101,6 @@ export default {
                 process.exit(1);
             }
         } catch (error: any) {
-            // Check for rate limiting (429 Too Many Requests)
-            if (error.statusCode === 429 || error.status === 429) {
-                const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
-                process.exit(1);
-            }
             logger.error('Failed to connect to Polar.sh');
             logger.error('Please check your Organization Access Token at https://polar.sh/settings/tokens');
             process.exit(1);
@@ -151,7 +149,8 @@ export default {
                     choices: [
                         { name: 'Products', value: 'products', checked: true },
                         { name: 'Discounts', value: 'discounts', checked: true },
-                        { name: 'Customers', value: 'customers', checked: false }
+                        { name: 'Customers', value: 'customers', checked: false },
+                        { name: 'License Keys', value: 'license_keys', checked: false }
                     ],
                     required: true
                 });
@@ -160,12 +159,16 @@ export default {
 
         logger.log(`Will migrate: ${migrateTypes.join(', ')}`);
 
-        // Execute the selected migrations
         const completedMigrations: string[] = [];
+        let productIdMap = new Map<string, string>();
+        let benefitToProductMap = new Map<string, string>();
+        let customerIdMap = new Map<string, string>();
 
         if (migrateTypes.includes('products')) {
-            const completed = await migrateProducts(polar, client, organization_id, brand_id);
-            if (completed) completedMigrations.push('products');
+            const result = await migrateProducts(polar, client, organization_id, brand_id);
+            if (result.completed) completedMigrations.push('products');
+            productIdMap = result.idMap;
+            benefitToProductMap = result.benefitToProductMap;
         }
 
         if (migrateTypes.includes('discounts')) {
@@ -174,8 +177,19 @@ export default {
         }
 
         if (migrateTypes.includes('customers')) {
-            const completed = await migrateCustomers(polar, client, organization_id, brand_id);
-            if (completed) completedMigrations.push('customers');
+            const result = await migrateCustomers(polar, client, organization_id, brand_id);
+            if (result.completed) completedMigrations.push('customers');
+            customerIdMap = result.idMap;
+        }
+
+        if (migrateTypes.includes('license_keys')) {
+            if (productIdMap.size === 0 || customerIdMap.size === 0) {
+                logger.error('License key migration requires products and customers to be migrated in the same session.');
+                logger.error('Please re-run with products, customers, and license_keys selected.');
+            } else {
+                const completed = await migrateLicenseKeys(polar, client, organization_id, productIdMap, customerIdMap, benefitToProductMap);
+                if (completed) completedMigrations.push('license_keys');
+            }
         }
 
         if (completedMigrations.length > 0) {
@@ -195,37 +209,33 @@ interface ProductToMigrate {
     benefits: Array<{ description: string }>;
 }
 
-async function migrateProducts(polar: Polar, client: any, organization_id: string, brand_id: string): Promise<boolean> {
+async function migrateProducts(polar: Polar, client: any, organization_id: string, brand_id: string): Promise<{ completed: boolean; idMap: Map<string, string>; benefitToProductMap: Map<string, string> }> {
     logger.log('\n=== Starting Products Migration ===');
+    const idMap = new Map<string, string>();
+    const benefitToProductMap = new Map<string, string>();
 
     try {
         logger.log('Fetching products from Polar.sh...');
         const products: any[] = [];
-        try {
-            let page = 1;
-            let hasMore = true;
-            while (hasMore) {
-                const response = await polar.products.list({ organizationId: organization_id, page });
-                if (response.result?.items?.length) {
-                    products.push(...response.result.items);
-                }
-                const pagination = response.result?.pagination;
-                hasMore = pagination ? page < pagination.maxPage : false;
-                page++;
+        let page = 1;
+        let hasMore = true;
+        while (hasMore) {
+            await delay(200);
+            const response = await retryWithBackoff(
+                () => polar.products.list({ organizationId: organization_id, page }),
+                { label: 'polar.products.list' }
+            );
+            if (response.result?.items?.length) {
+                products.push(...response.result.items);
             }
-        } catch (error: any) {
-            // Check for rate limiting (429 Too Many Requests)
-            if (error.statusCode === 429 || error.status === 429) {
-                const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
-                process.exit(1);
-            }
-            throw error;
+            const pagination = response.result?.pagination;
+            hasMore = pagination ? page < pagination.maxPage : false;
+            page++;
         }
 
         if (products.length === 0) {
             logger.log('No products found in Polar.sh. Skipping products migration.');
-            return false;
+            return { completed: false, idMap, benefitToProductMap };
         }
 
         logger.log(`Found ${products.length} products to migrate`);
@@ -234,8 +244,13 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
         const productsToMigrate: ProductToMigrate[] = [];
 
         for (const product of products) {
-            // Warn if product has benefits (license keys, GitHub access, etc.) that can't be migrated
+            // Build benefit→product reverse map for license key resolution
             if (product.benefits && product.benefits.length > 0) {
+                for (const benefit of product.benefits) {
+                    if (benefit.id) {
+                        benefitToProductMap.set(benefit.id, product.id);
+                    }
+                }
                 logger.warn(`Product "${product.name}" has ${product.benefits.length} benefits that require manual setup.`);
             }
 
@@ -348,7 +363,7 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
 
         if (productsToMigrate.length === 0) {
             logger.log('No compatible products found to migrate.');
-            return false;
+            return { completed: false, idMap, benefitToProductMap };
         }
 
         // Show preview of products that will be migrated
@@ -392,36 +407,39 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
 
         if (shouldProceed !== 'yes') {
             logger.log('Products migration cancelled by user.');
-            return false;
+            return { completed: false, idMap, benefitToProductMap };
         }
 
-        // Create products in Dodo Payments
         logger.log('\n[LOG] Starting products migration...');
         let successCount = 0;
         let errorCount = 0;
 
         for (const product of productsToMigrate) {
             try {
+                product.data.metadata = {
+                    polar_product_id: product.polar_id,
+                    migrated_from: 'polar',
+                    migrated_at: new Date().toISOString()
+                };
                 const createdProduct = await client.products.create(product.data);
+                idMap.set(product.polar_id, createdProduct.product_id);
                 logger.success(`Migrated: ${product.data.name} (Dodo ID: ${createdProduct.product_id})`);
                 successCount++;
             } catch (error: any) {
-                // Continue migrating other products even if one fails
                 logger.error(`Failed to migrate product "${product.data.name}": ${error.message}`);
                 errorCount++;
             }
         }
 
-        // Display migration summary
         logger.log('\n=== Products Migration Complete ===');
         logger.log(`Successfully migrated: ${successCount} products`);
         if (errorCount > 0) {
             logger.warn(`Errors encountered: ${errorCount}`);
         }
-        return true;
+        return { completed: true, idMap, benefitToProductMap };
     } catch (error: any) {
         logger.error('Failed to migrate products!', error.message);
-        return false;
+        return { completed: false, idMap, benefitToProductMap };
     }
 }
 
@@ -436,26 +454,20 @@ async function migrateDiscounts(polar: Polar, client: DodoPayments, organization
     try {
         logger.log('Fetching discounts from Polar.sh...');
         const discounts: any[] = [];
-        try {
-            let page = 1;
-            let hasMore = true;
-            while (hasMore) {
-                const response = await polar.discounts.list({ organizationId: organization_id, page });
-                if (response.result?.items?.length) {
-                    discounts.push(...response.result.items);
-                }
-                const pagination = response.result?.pagination;
-                hasMore = pagination ? page < pagination.maxPage : false;
-                page++;
+        let page = 1;
+        let hasMore = true;
+        while (hasMore) {
+            await delay(200);
+            const response = await retryWithBackoff(
+                () => polar.discounts.list({ organizationId: organization_id, page }),
+                { label: 'polar.discounts.list' }
+            );
+            if (response.result?.items?.length) {
+                discounts.push(...response.result.items);
             }
-        } catch (error: any) {
-            // Check for rate limiting (429 Too Many Requests)
-            if (error.statusCode === 429 || error.status === 429) {
-                const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
-                process.exit(1);
-            }
-            throw error;
+            const pagination = response.result?.pagination;
+            hasMore = pagination ? page < pagination.maxPage : false;
+            page++;
         }
 
         if (discounts.length === 0) {
@@ -628,37 +640,32 @@ interface CustomerToMigrate {
     };
 }
 
-async function migrateCustomers(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string): Promise<boolean> {
+async function migrateCustomers(polar: Polar, client: DodoPayments, organization_id: string, brand_id: string): Promise<{ completed: boolean; idMap: Map<string, string> }> {
     logger.log('\n[LOG] === Starting Customers Migration ===');
+    const idMap = new Map<string, string>();
 
     try {
         logger.log('Fetching customers from Polar.sh...');
         const customers: any[] = [];
-        try {
-            let page = 1;
-            let hasMore = true;
-            while (hasMore) {
-                const response = await polar.customers.list({ organizationId: organization_id, page });
-                if (response.result?.items?.length) {
-                    customers.push(...response.result.items);
-                }
-                const pagination = response.result?.pagination;
-                hasMore = pagination ? page < pagination.maxPage : false;
-                page++;
+        let page = 1;
+        let hasMore = true;
+        while (hasMore) {
+            await delay(200);
+            const response = await retryWithBackoff(
+                () => polar.customers.list({ organizationId: organization_id, page }),
+                { label: 'polar.customers.list' }
+            );
+            if (response.result?.items?.length) {
+                customers.push(...response.result.items);
             }
-        } catch (error: any) {
-            // Check for rate limiting (429 Too Many Requests)
-            if (error.statusCode === 429 || error.status === 429) {
-                const retryAfter = error.headers?.['retry-after'] || error.response?.headers?.['retry-after'] || 'unknown';
-                logger.error(`Polar.sh API rate limit exceeded (300 requests/minute). Retry after ${retryAfter} seconds.`);
-                process.exit(1);
-            }
-            throw error;
+            const pagination = response.result?.pagination;
+            hasMore = pagination ? page < pagination.maxPage : false;
+            page++;
         }
 
         if (customers.length === 0) {
             logger.log('No customers found in Polar.sh. Skipping customers migration.');
-            return false;
+            return { completed: false, idMap };
         }
 
         logger.log(`Found ${customers.length} customers to process`);
@@ -717,7 +724,7 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
 
         if (customersToMigrate.length === 0) {
             logger.log('No valid customers found to migrate.');
-            return false;
+            return { completed: false, idMap };
         }
 
         // Show preview of customers that will be migrated
@@ -751,10 +758,9 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
 
         if (shouldProceed !== 'yes') {
             logger.log('Customers migration cancelled by user.');
-            return false;
+            return { completed: false, idMap };
         }
 
-        // Create customers in Dodo Payments
         logger.log('\nStarting customers migration...');
         let successCount = 0;
         let errorCount = 0;
@@ -762,6 +768,7 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
         for (const customer of customersToMigrate) {
             try {
                 const createdCustomer = await client.customers.create(customer as any);
+                idMap.set(customer.metadata.polar_customer_id, createdCustomer.customer_id);
                 logger.success(`Migrated: ${customer.name || customer.email} (Dodo ID: ${createdCustomer.customer_id})`);
                 successCount++;
             } catch (error: any) {
@@ -770,15 +777,166 @@ async function migrateCustomers(polar: Polar, client: DodoPayments, organization
             }
         }
 
-        // Display migration summary
         logger.log('\n[LOG] === Customers Migration Complete ===');
         logger.log(`Successfully migrated: ${successCount} customers`);
         if (errorCount > 0) {
             logger.warn(`Errors encountered: ${errorCount}`);
         }
-        return true;
+        return { completed: true, idMap };
     } catch (error: any) {
         logger.error('Failed to migrate customers!', error.message);
+        return { completed: false, idMap };
+    }
+}
+
+async function migrateLicenseKeys(
+    polar: Polar,
+    client: any,
+    organization_id: string,
+    productIdMap: Map<string, string>,
+    customerIdMap: Map<string, string>,
+    benefitToProductMap: Map<string, string>
+): Promise<boolean> {
+    logger.log('\n=== Starting License Keys Migration ===');
+
+    try {
+        logger.log('Fetching license keys from Polar.sh...');
+        const allKeys: any[] = [];
+        let page = 1;
+        let hasMore = true;
+        while (hasMore) {
+            await delay(200);
+            const response = await retryWithBackoff(
+                () => polar.licenseKeys.list({ organizationId: organization_id, page, limit: 100 }),
+                { label: 'polar.licenseKeys.list' }
+            );
+            if (response.result?.items?.length) {
+                allKeys.push(...response.result.items);
+            }
+            const pagination = response.result?.pagination;
+            hasMore = pagination ? page < pagination.maxPage : false;
+            page++;
+        }
+
+        if (allKeys.length === 0) {
+            logger.log('No license keys found in Polar.sh. Skipping license keys migration.');
+            return false;
+        }
+
+        logger.log(`Found ${allKeys.length} license keys to process`);
+
+        const licenseKeysToMigrate: LicenseKeyToMigrate[] = [];
+        let skippedCount = 0;
+
+        for (const key of allKeys) {
+            if (key.status === 'revoked' || key.status === 'disabled') {
+                logger.log(`Skipping ${key.status} license key: ${key.id}`);
+                skippedCount++;
+                continue;
+            }
+
+            const polarProductId = benefitToProductMap.get(key.benefitId);
+            if (!polarProductId) {
+                logger.warn(`License key ${key.id}: cannot resolve benefit ${key.benefitId} to a product. Skipping.`);
+                skippedCount++;
+                continue;
+            }
+
+            const dodoProductId = productIdMap.get(polarProductId);
+            if (!dodoProductId) {
+                logger.warn(`License key ${key.id}: no matching Dodo product for Polar product ${polarProductId}. Skipping.`);
+                skippedCount++;
+                continue;
+            }
+
+            const dodoCustomerId = customerIdMap.get(key.customerId);
+            if (!dodoCustomerId) {
+                logger.warn(`License key ${key.id}: no matching Dodo customer for Polar customer ${key.customerId}. Skipping.`);
+                skippedCount++;
+                continue;
+            }
+
+            licenseKeysToMigrate.push({
+                key: key.key,
+                dodo_customer_id: dodoCustomerId,
+                dodo_product_id: dodoProductId,
+                activations_limit: key.limitActivations ?? null,
+                expires_at: key.expiresAt ?? null,
+                source_key_id: key.id,
+                display_key: `****${key.key.slice(-6)}`,
+                product_name: 'Product ' + polarProductId,
+                customer_email: key.customer?.email || 'Unknown'
+            });
+        }
+
+        if (licenseKeysToMigrate.length === 0) {
+            logger.log('No valid license keys found to migrate.');
+            return false;
+        }
+
+        logger.log('\n[PREVIEW] License keys to be migrated:');
+        logger.log('=====================================');
+        licenseKeysToMigrate.forEach((lk, index) => {
+            const limit = lk.activations_limit !== null ? `${lk.activations_limit} activations` : 'Unlimited';
+            const expiry = lk.expires_at ? new Date(lk.expires_at).toLocaleDateString() : 'Never';
+            logger.log(`${index + 1}. ${lk.display_key} - ${lk.customer_email} - ${limit} - Expires: ${expiry}`);
+        });
+        if (skippedCount > 0) {
+            logger.warn(`${skippedCount} license keys were skipped (revoked/disabled/unmapped)`);
+        }
+        logger.log('=====================================');
+
+        let shouldProceed = 'yes';
+        if (process.stdin.isTTY) {
+            const { select } = await import('@inquirer/prompts');
+            shouldProceed = await select({
+                message: `Proceed with migrating ${licenseKeysToMigrate.length} license keys to Dodo Payments?`,
+                choices: [
+                    { name: 'Yes', value: 'yes' },
+                    { name: 'No', value: 'no' }
+                ]
+            });
+        } else {
+            logger.log('Non-interactive mode: proceeding with license keys migration automatically');
+        }
+
+        if (shouldProceed !== 'yes') {
+            logger.log('License keys migration cancelled by user.');
+            return false;
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+
+        for (const lk of licenseKeysToMigrate) {
+            try {
+                const created = await client.licenseKeys.create({
+                    key: lk.key,
+                    customer_id: lk.dodo_customer_id,
+                    product_id: lk.dodo_product_id,
+                    activations_limit: lk.activations_limit,
+                    expires_at: lk.expires_at,
+                });
+                logger.success(`Migrated license key: ${lk.display_key} (Dodo ID: ${created.id})`);
+                successCount++;
+            } catch (error: any) {
+                if (error.status === 409) {
+                    logger.warn(`License key ${lk.display_key} already exists in Dodo. Skipping.`);
+                } else {
+                    logger.error(`Failed to migrate license key ${lk.display_key}: ${error.message}`);
+                }
+                errorCount++;
+            }
+        }
+
+        logger.log('\n=== License Keys Migration Complete ===');
+        logger.log(`Successfully migrated: ${successCount} license keys`);
+        if (errorCount > 0) {
+            logger.warn(`Errors encountered: ${errorCount}`);
+        }
+        return successCount > 0;
+    } catch (error: any) {
+        logger.error('Failed to migrate license keys!', error.message);
         return false;
     }
 }
