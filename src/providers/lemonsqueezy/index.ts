@@ -405,7 +405,7 @@ export default {
 
                     if (licenseKeysResponse.error || licenseKeysResponse.statusCode !== 200) {
                         logger.error("Failed to fetch license keys from Lemon Squeezy!", licenseKeysResponse.error);
-                        break;
+                        process.exit(1);
                     }
 
                     if (licenseKeysResponse.data?.data?.length) {
