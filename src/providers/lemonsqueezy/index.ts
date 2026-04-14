@@ -383,7 +383,7 @@ export default {
         if (migrationTypes.includes('license_keys')) {
             if (productIdMap.size === 0 || customerIdMap.size === 0) {
                 logger.error('License key migration requires products and customers to be migrated in the same session.');
-                logger.error('Please re-run with products, customers, and license_keys selected.');
+                logger.error('Please re-run with products, customers, and license keys selected.');
                 process.exit(1);
             } else {
                 logger.log('\nStarting license keys migration...');
