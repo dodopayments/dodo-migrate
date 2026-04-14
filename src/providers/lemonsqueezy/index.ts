@@ -60,7 +60,7 @@ export default {
                     { name: 'Products', value: 'products', checked: true },
                     { name: 'Coupons/Discounts', value: 'coupons', checked: true },
                     { name: 'Customers', value: 'customers', checked: true },
-                    { name: 'License Keys', value: 'license_keys', checked: false }
+                    { name: 'License Keys', value: 'license_keys', checked: true }
                 ],
                 required: true
             });
