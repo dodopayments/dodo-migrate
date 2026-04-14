@@ -28,6 +28,7 @@ Note: This tool is currently in Beta and may contain bugs. If you encounter any 
 - [x] Products
 - [x] Discount codes
 - [x] Customers
+- [x] License keys (Polar.sh, Lemon Squeezy)
 
 ## Contents
 - [Features](#features)

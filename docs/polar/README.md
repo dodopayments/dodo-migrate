@@ -1,6 +1,6 @@
 # Polar.sh Migration Guide
 
-Migrate products, discounts, and customers from Polar.sh to Dodo Payments with `dodo-migrate polar`.
+Migrate products, discounts, customers, and license keys from Polar.sh to Dodo Payments with `dodo-migrate polar`.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ The CLI will guide you through:
 3. Select environment (test/live mode)
 4. Select organization (if you have multiple)
 5. Select brand
-6. Choose what to migrate (products, discounts, customers)
+6. Choose what to migrate (products, discounts, customers, license keys)
 7. Preview items
 8. Confirm and migrate
 
@@ -77,10 +77,11 @@ dodo-migrate polar \
 - Price amounts preserved in cents
 
 **Limitations:**
-- ⚠️ **Benefits not migrated** (license keys, GitHub access, file downloads, custom, etc.)
-  - Products with benefits will migrate successfully
+- ⚠️ **Non-license-key benefits not migrated** (GitHub access, file downloads, custom, etc.)
+  - Products with non-license-key benefits will migrate successfully
   - Warning logged for manual setup
   - Configure benefits manually in Dodo Payments after migration
+- License key benefits are migrated separately (see License Keys section below)
 - Weekly/daily recurring intervals not supported (only monthly/yearly)
 - Trial periods not migrated
 - Pay-what-you-want pricing → Skipped with warning
@@ -126,6 +127,32 @@ dodo-migrate polar \
 - Customers without email → Skipped with warning
 - Deleted customers → Skipped automatically
 
+### ✅ License Keys
+
+**What's Migrated:**
+- License key strings
+- Activation limits
+- Expiration dates
+- Customer and product associations
+
+**Requirements:**
+- Products and customers must be migrated in the same session as license keys
+- The migration builds an in-memory mapping of Polar IDs → Dodo IDs
+- License keys are resolved from Polar benefits (benefit → product mapping built during product migration)
+
+**Transformations:**
+- Polar `benefit_id` → resolved to Dodo `product_id` via benefit-to-product mapping
+- Polar `customer_id` → mapped to Dodo `customer_id`
+- `limit_activations` → `activations_limit` (null = unlimited in both systems)
+- `expires_at` → direct mapping (ISO 8601, null = perpetual)  
+⚠️ We are currently working on improving the stability of the `expires_at` parameter. It may contain bugs.
+
+**Limitations:**
+- ⚠️ **Revoked/disabled keys are skipped** (only `"granted"` status keys are migrated)
+- License key activations (device instances) are not migrated — customers will need to re-activate
+- Keys without a resolvable product or customer mapping are skipped with a warning
+- Usage counts (`usage`, `limit_usage`) are not migrated (Dodo tracks activations, not usage)
+
 ---
 
 ## CLI Arguments Reference
@@ -136,7 +163,7 @@ dodo-migrate polar \
 | `--dodo-api-key` | Dodo Payments API Key | Interactive: No<br>Non-interactive: Yes | Prompts in interactive mode |
 | `--dodo-brand-id` | Dodo Payments Brand ID | Interactive: No<br>Non-interactive: Yes | Prompts in interactive mode |
 | `--mode` | Environment: `test_mode` or `live_mode` | No | `test_mode` |
-| `--migrate-types` | Comma-separated: `products`, `discounts`, `customers` | No | Interactive: Prompts<br>Non-interactive: `products,discounts` |
+| `--migrate-types` | Comma-separated: `products`, `discounts`, `customers`, `license_keys` | No | Interactive: Prompts<br>Non-interactive: `products,discounts` |
 | `--polar-organization-id` | Polar organization ID (if multiple orgs) | Only if multiple orgs in non-interactive mode | Auto-select if single org |
 
 ---
@@ -221,17 +248,23 @@ dodo-migrate polar \
 - Add `--polar-organization-id` flag with specific organization ID
 - Get organization ID from Polar.sh dashboard or run in interactive mode first
 
-### "Product 'X' has N benefits which will not be migrated"
+### "Product 'X' has N benefits that require manual setup"
 
-**Cause**: Benefits are Polar-specific features not supported by Dodo Payments
+**Cause**: Non-license-key benefits are Polar-specific features not directly supported by Dodo Payments
 
 **Solution**:
-1. Migration will continue successfully
-2. Manually configure benefits in Dodo Payments:
-   - **License keys**: Use [Keygen](https://keygen.sh) or [LicenseSpring](https://licensespring.com) with webhooks
+1. License key benefits are handled by the `license_keys` migration type
+2. Other benefits must be configured manually in Dodo Payments:
    - **GitHub access**: Use GitHub Apps or manual invitations
    - **File downloads**: Use cloud storage (S3, GCS) with signed URLs
    - **Discord invites**: Use Discord bot with role assignment
+
+### "License key migration requires products and customers to be migrated in the same session"
+
+**Cause**: License keys need product and customer ID mappings that are built during migration
+
+**Solution**:
+- Re-run migration with all three types selected: `--migrate-types="products,customers,license_keys"`
 
 ### "Discount 'CODE' is restricted to specific products"
 
@@ -325,9 +358,9 @@ Individual failures don't stop migration - check logs for complete results.
 **Polar.sh API**: 300 requests per minute
 
 Migration handles rate limiting automatically:
-- Displays clear error messages
-- Shows retry wait time
-- Exits gracefully for retry
+- Adds 200ms delay between API calls to stay under limits
+- Retries with exponential backoff on 429 (rate limit) responses
+- Reads `retry-after` header when available
 
 **Large Migrations**:
 - 100 products → ~30 seconds
