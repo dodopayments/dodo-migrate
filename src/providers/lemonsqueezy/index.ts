@@ -92,6 +92,14 @@ export default {
         const productIdMap = new Map<string, string>();
         const customerIdMap = new Map<string, string>();
 
+        if (migrationTypes.includes('license_keys')) {
+            if (!migrationTypes.includes('products') || !migrationTypes.includes('customers')) {
+                logger.error('License key migration requires products and customers to be migrated in the same session.');
+                logger.error('Please re-run with products, customers, and license keys selected.');
+                process.exit(1);
+            }
+        }
+
         // Migrate products if selected
         if (migrationTypes.includes('products')) {
             logger.log('\nStarting products migration...');
