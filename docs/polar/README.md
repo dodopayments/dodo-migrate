@@ -130,7 +130,7 @@ dodo-migrate polar \
 ### ✅ License Keys
 
 **What's Migrated:**
-- License key strings (imported via Dodo's import API, marked as `source: "import"`)
+- License key strings
 - Activation limits
 - Expiration dates
 - Customer and product associations
@@ -144,7 +144,8 @@ dodo-migrate polar \
 - Polar `benefit_id` → resolved to Dodo `product_id` via benefit-to-product mapping
 - Polar `customer_id` → mapped to Dodo `customer_id`
 - `limit_activations` → `activations_limit` (null = unlimited in both systems)
-- `expires_at` → direct mapping (ISO 8601, null = perpetual)
+- `expires_at` → direct mapping (ISO 8601, null = perpetual)  
+⚠️ We are currently working on improving the stability of the `expires_at` parameter. It may contain bugs.
 
 **Limitations:**
 - ⚠️ **Revoked/disabled keys are skipped** (only `"granted"` status keys are migrated)
