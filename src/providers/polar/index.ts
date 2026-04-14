@@ -186,6 +186,7 @@ export default {
             if (productIdMap.size === 0 || customerIdMap.size === 0) {
                 logger.error('License key migration requires products and customers to be migrated in the same session.');
                 logger.error('Please re-run with products, customers, and license_keys selected.');
+                process.exit(1);
             } else {
                 const completed = await migrateLicenseKeys(polar, client, organization_id, productIdMap, customerIdMap, benefitToProductMap);
                 if (completed) completedMigrations.push('license_keys');
@@ -422,7 +423,9 @@ async function migrateProducts(polar: Polar, client: any, organization_id: strin
                     migrated_at: new Date().toISOString()
                 };
                 const createdProduct = await client.products.create(product.data);
-                idMap.set(product.polar_id, createdProduct.product_id);
+                if (!idMap.has(product.polar_id)) {
+                    idMap.set(product.polar_id, createdProduct.product_id);
+                }
                 logger.success(`Migrated: ${product.data.name} (Dodo ID: ${createdProduct.product_id})`);
                 successCount++;
             } catch (error: any) {
@@ -907,6 +910,7 @@ async function migrateLicenseKeys(
 
         let successCount = 0;
         let errorCount = 0;
+        let duplicateCount = 0;
 
         for (const lk of licenseKeysToMigrate) {
             try {
@@ -922,19 +926,23 @@ async function migrateLicenseKeys(
             } catch (error: any) {
                 if (error.status === 409) {
                     logger.warn(`License key ${lk.display_key} already exists in Dodo. Skipping.`);
+                    duplicateCount++;
                 } else {
                     logger.error(`Failed to migrate license key ${lk.display_key}: ${error.message}`);
+                    errorCount++;
                 }
-                errorCount++;
             }
         }
 
         logger.log('\n=== License Keys Migration Complete ===');
         logger.log(`Successfully migrated: ${successCount} license keys`);
+        if (duplicateCount > 0) {
+            logger.log(`Duplicates skipped: ${duplicateCount}`);
+        }
         if (errorCount > 0) {
             logger.warn(`Errors encountered: ${errorCount}`);
         }
-        return successCount > 0;
+        return successCount > 0 || duplicateCount > 0;
     } catch (error: any) {
         logger.error('Failed to migrate license keys!', error.message);
         return false;

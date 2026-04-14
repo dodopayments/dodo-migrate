@@ -361,7 +361,7 @@ export default {
                             name: user.attributes.name!,
                             email: user.attributes.email!
                         });
-                        customerIdMap.set(user.attributes.email!, createdCustomer.customer_id);
+                        customerIdMap.set(user.attributes.email!.trim().toLowerCase(), createdCustomer.customer_id);
                     }
 
                     currentPage++;
@@ -376,6 +376,7 @@ export default {
             if (productIdMap.size === 0 || customerIdMap.size === 0) {
                 logger.error('License key migration requires products and customers to be migrated in the same session.');
                 logger.error('Please re-run with products, customers, and license_keys selected.');
+                process.exit(1);
             } else {
                 logger.log('\nStarting license keys migration...');
 
@@ -430,7 +431,8 @@ export default {
                         continue;
                     }
 
-                    const dodoCustomerId = customerIdMap.get(attrs.user_email);
+                    const normalizedEmail = attrs.user_email?.trim().toLowerCase();
+                    const dodoCustomerId = normalizedEmail ? customerIdMap.get(normalizedEmail) : undefined;
                     if (!dodoCustomerId) {
                         logger.warn(`License key ${lk.id}: no matching Dodo customer for email ${attrs.user_email}. Skipping.`);
                         skippedCount++;
@@ -477,6 +479,7 @@ export default {
                     if (migrateLicenseKeysConfirm === 'yes') {
                         let lkSuccessCount = 0;
                         let lkFailureCount = 0;
+                        let lkDuplicateCount = 0;
 
                         for (const lk of licenseKeysToMigrate) {
                             await delay(100);
@@ -493,15 +496,16 @@ export default {
                             } catch (error: any) {
                                 if (error.status === 409) {
                                     logger.warn(`License key ${lk.display_key} already exists in Dodo. Skipping.`);
+                                    lkDuplicateCount++;
                                 } else {
                                     logger.error(`Failed to migrate license key ${lk.display_key}: ${error.message}`);
+                                    lkFailureCount++;
                                 }
-                                lkFailureCount++;
                             }
                         }
 
-                        logger.log(`\nLicense keys migration complete: ${lkSuccessCount} succeeded, ${lkFailureCount} failed`);
-                        if (lkSuccessCount > 0) {
+                        logger.log(`\nLicense keys migration complete: ${lkSuccessCount} succeeded, ${lkDuplicateCount} duplicates skipped, ${lkFailureCount} failed`);
+                        if (lkSuccessCount > 0 || lkDuplicateCount > 0) {
                             completedLicenseKeys = true;
                         }
                     } else {

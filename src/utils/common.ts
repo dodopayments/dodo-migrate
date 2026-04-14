@@ -20,9 +20,18 @@ export async function retryWithBackoff<T>(
             if (status === 429 && attempt < maxRetries) {
                 const retryAfter = error.headers?.['retry-after']
                     ?? error.response?.headers?.['retry-after'];
-                const waitMs = retryAfter
-                    ? parseInt(retryAfter, 10) * 1000
-                    : baseDelay * Math.pow(2, attempt);
+                let waitMs = baseDelay * Math.pow(2, attempt);
+                if (retryAfter) {
+                    const parsed = parseInt(retryAfter, 10);
+                    if (!isNaN(parsed)) {
+                        waitMs = parsed * 1000;
+                    } else {
+                        const dateMs = Date.parse(retryAfter);
+                        if (!isNaN(dateMs)) {
+                            waitMs = Math.max(0, dateMs - Date.now());
+                        }
+                    }
+                }
 
                 logger.warn(`Rate limited on ${label} (attempt ${attempt + 1}/${maxRetries}). Retrying in ${Math.round(waitMs / 1000)}s...`);
                 await delay(waitMs);
