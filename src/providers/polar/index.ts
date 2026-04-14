@@ -164,6 +164,14 @@ export default {
         let benefitToProductMap = new Map<string, string>();
         let customerIdMap = new Map<string, string>();
 
+        if (migrateTypes.includes('license_keys')) {
+            if (!migrateTypes.includes('products') || !migrateTypes.includes('customers')) {
+                logger.error('License key migration requires products and customers to be migrated in the same session.');
+                logger.error('Please re-run with products, customers, and license keys selected.');
+                process.exit(1);
+            }
+        }
+
         if (migrateTypes.includes('products')) {
             const result = await migrateProducts(polar, client, organization_id, brand_id);
             if (result.completed) completedMigrations.push('products');
@@ -185,7 +193,7 @@ export default {
         if (migrateTypes.includes('license_keys')) {
             if (productIdMap.size === 0 || customerIdMap.size === 0) {
                 logger.error('License key migration requires products and customers to be migrated in the same session.');
-                logger.error('Please re-run with products, customers, and license_keys selected.');
+                logger.error('Please re-run with products, customers, and license keys selected.');
                 process.exit(1);
             } else {
                 const completed = await migrateLicenseKeys(polar, client, organization_id, productIdMap, customerIdMap, benefitToProductMap);
