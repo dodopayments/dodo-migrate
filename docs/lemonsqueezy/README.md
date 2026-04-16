@@ -22,6 +22,7 @@ dodo-migrate lemonsqueezy
 - Requires products and customers to be migrated in the same session
 - Maps license keys to Dodo products and customers via in-memory ID maps
 - Activation limit of 0 in Lemon Squeezy is converted to unlimited (null) in Dodo
+- Automatically adds expiry to Dodo Payments licence key where applicable
 - Disabled and expired keys are skipped with a warning
 - Duplicate keys (409) are handled gracefully for idempotent re-runs
 - License key activations (device instances) are not migrated — customers will need to re-activate

@@ -145,7 +145,6 @@ dodo-migrate polar \
 - Polar `customer_id` → mapped to Dodo `customer_id`
 - `limit_activations` → `activations_limit` (null = unlimited in both systems)
 - `expires_at` → direct mapping (ISO 8601, null = perpetual)  
-⚠️ We are currently working on improving the stability of the `expires_at` parameter. It may contain bugs.
 
 **Limitations:**
 - ⚠️ **Revoked/disabled keys are skipped** (only `"granted"` status keys are migrated)
