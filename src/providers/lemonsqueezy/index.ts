@@ -88,7 +88,9 @@ async function fetchMigratedDodoProducts(client: ReturnType<typeof setupDodoClie
     const duplicates = new Set<string>();
 
     try {
-        let page = await client.products.list({ brand_id: brandId, page_size: DODO_PAGE_SIZE });
+        // page_number must be passed explicitly. The Dodo API is zero-based, but the SDK's pagination assumes the first page is 1
+        // when page_number is absent and then requests page_number + 1, which would skip page 1 entirely.
+        let page = await client.products.list({ brand_id: brandId, page_number: 0, page_size: DODO_PAGE_SIZE });
         while (true) {
             for (const product of page.items) {
                 const rawLsProductId = product.metadata?.ls_product_id;
@@ -128,7 +130,8 @@ async function fetchDodoCustomersByEmail(client: ReturnType<typeof setupDodoClie
     const customersByEmail = new Map<string, string>();
 
     try {
-        let page = await client.customers.list({ page_size: DODO_PAGE_SIZE });
+        // page_number must be passed explicitly (zero-based API, see fetchMigratedDodoProducts)
+        let page = await client.customers.list({ page_number: 0, page_size: DODO_PAGE_SIZE });
         while (true) {
             for (const customer of page.items) {
                 const email = customer.email?.trim().toLowerCase();
@@ -168,7 +171,8 @@ async function ensureExistingLicenseKeyDisabled(
     ];
 
     for (const filters of searches) {
-        let page = await client.licenseKeys.list({ ...filters, page_size: DODO_PAGE_SIZE });
+        // page_number: 0 for the same reason as in fetchMigratedDodoProducts (zero-based API, SDK defaults to 1)
+        let page = await client.licenseKeys.list({ ...filters, page_number: 0, page_size: DODO_PAGE_SIZE });
         while (true) {
             const existing = page.items.find((candidate) => candidate.key === lk.key);
             if (existing) {
