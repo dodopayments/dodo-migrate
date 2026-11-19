@@ -52,6 +52,8 @@ export interface LicenseKeyToMigrate {
     dodo_product_id: string;
     activations_limit: number | null;
     expires_at: string | null;
+    /** Disable the key in Dodo right after creating it (used for source keys that were disabled) */
+    disabled?: boolean;
     source_key_id: string;
     display_key: string;
     product_name: string;
