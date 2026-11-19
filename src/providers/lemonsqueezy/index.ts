@@ -151,6 +151,47 @@ async function fetchDodoCustomersByEmail(client: ReturnType<typeof setupDodoClie
 }
 
 /**
+ * Makes sure a license key that already exists in Dodo Payments is disabled.
+ *
+ * Used when `licenseKeys.create` returns 409 for a key that was disabled in Lemon Squeezy: an earlier run may have
+ * created it and been interrupted before the follow-up disable call, leaving it active. The existing key is found
+ * by its key string (narrowed by customer and product, then by product alone) and disabled if it is not already.
+ * Throws if the key cannot be found or cannot be disabled, so the caller never reports it as done.
+ */
+async function ensureExistingLicenseKeyDisabled(
+    client: ReturnType<typeof setupDodoClient>,
+    lk: LicenseKeyToMigrate
+): Promise<{ id: string; alreadyDisabled: boolean }> {
+    const searches = [
+        { customer_id: lk.dodo_customer_id, product_id: lk.dodo_product_id },
+        { product_id: lk.dodo_product_id }
+    ];
+
+    for (const filters of searches) {
+        let page = await client.licenseKeys.list({ ...filters, page_size: DODO_PAGE_SIZE });
+        while (true) {
+            const existing = page.items.find((candidate) => candidate.key === lk.key);
+            if (existing) {
+                if (existing.status === 'disabled') {
+                    return { id: existing.id, alreadyDisabled: true };
+                }
+                // 10 req/s = 100ms delay
+                await delay(100);
+                await client.licenseKeys.update(existing.id, { disabled: true });
+                return { id: existing.id, alreadyDisabled: false };
+            }
+
+            if (!page.hasNextPage()) break;
+            // 10 req/s = 100ms delay
+            await delay(100);
+            page = await page.getNextPage();
+        }
+    }
+
+    throw new Error('the existing key could not be found in Dodo Payments');
+}
+
+/**
  * A Lemon Squeezy product object carries no subscription information. That lives on its variants and their prices,
  * so we look at the product's default (first non-draft) variant and its price to decide whether it is a subscription.
  *
@@ -628,6 +669,12 @@ export default {
             });
 
             if (proceedCustomersMigration === 'yes') {
+                // Customers from an earlier run are recognised by email, so running the tool again never creates duplicates.
+                // New customers are added to this map as they are created, which also covers a repeated email within Lemon Squeezy.
+                const existingDodoCustomers = await fetchDodoCustomersByEmail(client);
+                logger.log(`Found ${existingDodoCustomers.size} customer(s) already in Dodo Payments`);
+                let alreadyMigratedCustomers = 0;
+
                 // Iterate through all the pages of customers
                 const lastPage = customers.data?.meta?.page?.lastPage ?? 1;
                 // Page 1 is already fetched above, so reuse it instead of requesting it a second time
@@ -651,15 +698,29 @@ export default {
                     }
 
                     for (const user of customersNew.data.data) {
+                        const normalizedEmail = user.attributes.email!.trim().toLowerCase();
+
+                        const existingCustomerId = existingDodoCustomers.get(normalizedEmail);
+                        if (existingCustomerId) {
+                            logger.log(`Skipping customer: ${user.attributes.email} - already migrated (Dodo Payments customer ID: ${existingCustomerId})`);
+                            customerIdMap.set(normalizedEmail, existingCustomerId);
+                            alreadyMigratedCustomers++;
+                            continue;
+                        }
+
                         await delay(100);
                         const createdCustomer = await client.customers.create({
                             name: user.attributes.name!,
                             email: user.attributes.email!
                         });
-                        customerIdMap.set(user.attributes.email!.trim().toLowerCase(), createdCustomer.customer_id);
+                        existingDodoCustomers.set(normalizedEmail, createdCustomer.customer_id);
+                        customerIdMap.set(normalizedEmail, createdCustomer.customer_id);
                     }
 
                     currentPage++;
+                }
+                if (alreadyMigratedCustomers > 0) {
+                    logger.log(`${alreadyMigratedCustomers} customer(s) were already migrated by an earlier run and were not created again.`);
                 }
                 completedCustomers = true;
             } else {
@@ -869,8 +930,21 @@ export default {
                                 lkSuccessCount++;
                             } catch (error: any) {
                                 if (error.status === 409) {
-                                    logger.warn(`License key ${lk.display_key} already exists in Dodo. Skipping.`);
-                                    lkDuplicateCount++;
+                                    if (lk.disabled) {
+                                        // An earlier run may have been interrupted after creating this key but before disabling it,
+                                        // which leaves it active in Dodo. Never count it as done until it is confirmed disabled.
+                                        try {
+                                            const outcome = await ensureExistingLicenseKeyDisabled(client, lk);
+                                            logger.warn(`License key ${lk.display_key} already exists in Dodo (ID: ${outcome.id}). ${outcome.alreadyDisabled ? 'It is already disabled.' : 'It was active, so it has now been disabled.'}`);
+                                            lkDuplicateCount++;
+                                        } catch (disableError: any) {
+                                            logger.error(`License key ${lk.display_key} already exists in Dodo but could NOT be confirmed disabled: ${disableError.message}. It may be active - disable it manually.`);
+                                            lkFailureCount++;
+                                        }
+                                    } else {
+                                        logger.warn(`License key ${lk.display_key} already exists in Dodo. Skipping.`);
+                                        lkDuplicateCount++;
+                                    }
                                 } else {
                                     logger.error(`Failed to migrate license key ${lk.display_key}: ${error.message}`);
                                     lkFailureCount++;

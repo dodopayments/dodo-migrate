@@ -6,10 +6,10 @@ dodo-migrate lemonsqueezy
 ```
 
 #### Supported methods:
-- Move one-time payment products from Lemon Squeezy to Dodo Payments
+- Move one-time payment products from Lemon Squeezy to Dodo Payments (products already migrated are found by `metadata.ls_product_id` and not created again)
 - Move subscription products (monthly/yearly) from Lemon Squeezy to Dodo Payments
 - Move percentage-based coupons/discounts from Lemon Squeezy to Dodo Payments
-- Move customers from Lemon Squeezy to Dodo Payments
+- Move customers from Lemon Squeezy to Dodo Payments (customers already in Dodo Payments are matched by email and not created again)
 - Move license keys from Lemon Squeezy to Dodo Payments
 
 #### Coupon Migration Details:
@@ -19,11 +19,10 @@ dodo-migrate lemonsqueezy
 - Maps discount codes and names accurately
 
 #### License Key Migration Details:
-- Requires products and customers to be migrated in the same session
 - Maps license keys to Dodo products and customers using the product and customer IDs found in Dodo Payments
 - Activation limit of 0 in Lemon Squeezy is converted to unlimited (null) in Dodo
 - Automatically adds expiry to Dodo Payments licence key where applicable
-- Disabled and expired keys are skipped with a warning by default; pass `--include-inactive-licenses` to migrate them (disabled keys are created and then disabled in Dodo Payments)
+- Disabled and expired keys are skipped with a warning by default; pass `--include-inactive-licenses` to migrate them (disabled keys are created and then disabled in Dodo Payments; if a re-run finds one that already exists, it is disabled if it is still active)
 - Products and customers from an earlier run are looked up in Dodo Payments (by `metadata.ls_product_id` and by email), so license keys can be migrated in a later session
 - Duplicate keys (409) are handled gracefully for idempotent re-runs
 - License key activations (device instances) are not migrated — customers will need to re-activate
