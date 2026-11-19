@@ -20,10 +20,11 @@ dodo-migrate lemonsqueezy
 
 #### License Key Migration Details:
 - Requires products and customers to be migrated in the same session
-- Maps license keys to Dodo products and customers via in-memory ID maps
+- Maps license keys to Dodo products and customers using the product and customer IDs found in Dodo Payments
 - Activation limit of 0 in Lemon Squeezy is converted to unlimited (null) in Dodo
 - Automatically adds expiry to Dodo Payments licence key where applicable
-- Disabled and expired keys are skipped with a warning
+- Disabled and expired keys are skipped with a warning by default; pass `--include-inactive-licenses` to migrate them (disabled keys are created and then disabled in Dodo Payments)
+- Products and customers from an earlier run are looked up in Dodo Payments (by `metadata.ls_product_id` and by email), so license keys can be migrated in a later session
 - Duplicate keys (409) are handled gracefully for idempotent re-runs
 - License key activations (device instances) are not migrated — customers will need to re-activate
 
@@ -34,5 +35,6 @@ dodo-migrate lemonsqueezy
 | --dodo-api-key | (string) | Dodo Payments API key
 | --mode | test_mode / live_mode | Choose your desired mode
 | --dodo-brand-id | (string) | Your Dodo Payments brand ID
+| --include-inactive-licenses | (boolean) | Also migrate expired and disabled license keys (skipped by default)
 
 

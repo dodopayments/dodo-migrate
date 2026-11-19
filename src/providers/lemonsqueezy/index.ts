@@ -1,4 +1,4 @@
-import { listProducts, lemonSqueezySetup, getStore, Store, listDiscounts, listCustomers, listLicenseKeys } from '@lemonsqueezy/lemonsqueezy.js';
+import { listProducts, lemonSqueezySetup, getStore, Store, listDiscounts, listCustomers, listLicenseKeys, listVariants, listPrices } from '@lemonsqueezy/lemonsqueezy.js';
 import { input, select, checkbox } from '@inquirer/prompts';
 import { logger } from '../../utils/logger';
 import { delay, type LicenseKeyToMigrate } from '../../utils/common';
@@ -8,6 +8,222 @@ import { Product } from 'dodopayments/resources.js';
 
 // This will be used for caching product information when required
 const DodoPaymentsProductCache: Record<string, Product> = {};
+
+// Lemon Squeezy returns only 10 items per page by default, so every list call must paginate explicitly.
+const LS_PAGE_SIZE = 100;
+
+type LemonSqueezyInterval = 'day' | 'week' | 'month' | 'year';
+
+type LemonSqueezyPagedResponse<T> = {
+    statusCode: number | null;
+    error: Error | null;
+    data: { data: T[]; meta?: { page?: { lastPage?: number } } } | null;
+};
+
+/**
+ * Collects every page of a paginated Lemon Squeezy list endpoint.
+ * Exits the process on the first failed request, matching how the rest of this provider handles fetch errors.
+ */
+async function fetchAllPages<T>(
+    label: string,
+    fetchPage: (page: { number: number; size: number }) => Promise<LemonSqueezyPagedResponse<T>>
+): Promise<T[]> {
+    const allItems: T[] = [];
+    let currentPage = 1;
+    let hasMorePages = true;
+
+    while (hasMorePages) {
+        // 5 req/s = 200ms delay
+        await delay(200);
+        const response = await fetchPage({ number: currentPage, size: LS_PAGE_SIZE });
+
+        if (response.error || response.statusCode !== 200 || !response.data) {
+            logger.error(`Failed to fetch ${label} from Lemon Squeezy!`, response.error);
+            process.exit(1);
+        }
+
+        allItems.push(...response.data.data);
+
+        const lastPage = response.data.meta?.page?.lastPage ?? currentPage;
+        hasMorePages = currentPage < lastPage;
+        currentPage++;
+    }
+
+    return allItems;
+}
+
+// Dodo Payments' TimeInterval values for each Lemon Squeezy interval unit
+const DODO_INTERVAL_MAP: Record<LemonSqueezyInterval, 'Day' | 'Week' | 'Month' | 'Year'> = {
+    day: 'Day',
+    week: 'Week',
+    month: 'Month',
+    year: 'Year'
+};
+
+const DAYS_PER_INTERVAL: Record<LemonSqueezyInterval, number> = {
+    day: 1,
+    week: 7,
+    month: 30,
+    year: 365
+};
+
+type SubscriptionPricing = {
+    unitPrice: number;
+    interval: LemonSqueezyInterval;
+    intervalCount: number;
+    trialDays: number;
+};
+
+const DODO_PAGE_SIZE = 100;
+
+/**
+ * Finds the products in Dodo Payments that an earlier run already migrated, keyed by their Lemon Squeezy product ID.
+ * The link is `metadata.ls_product_id`, which this provider stamps on every product it creates.
+ *
+ * If the same Lemon Squeezy product was migrated more than once (for example by an older, non-idempotent run),
+ * the oldest Dodo product wins so repeated runs always resolve to the same one.
+ */
+async function fetchMigratedDodoProducts(client: ReturnType<typeof setupDodoClient>, brandId: string): Promise<Map<string, { productId: string; name: string }>> {
+    const migrated = new Map<string, { productId: string; name: string; createdAt: string }>();
+    const duplicates = new Set<string>();
+
+    try {
+        let page = await client.products.list({ brand_id: brandId, page_size: DODO_PAGE_SIZE });
+        while (true) {
+            for (const product of page.items) {
+                const rawLsProductId = product.metadata?.ls_product_id;
+                if (rawLsProductId === undefined || rawLsProductId === null || rawLsProductId === '') continue;
+                const lsProductId = String(rawLsProductId);
+
+                const existing = migrated.get(lsProductId);
+                if (existing) {
+                    duplicates.add(lsProductId);
+                    if (product.created_at >= existing.createdAt) continue;
+                }
+                migrated.set(lsProductId, { productId: product.product_id, name: product.name || '', createdAt: product.created_at });
+            }
+
+            if (!page.hasNextPage()) break;
+            // 10 req/s = 100ms delay
+            await delay(100);
+            page = await page.getNextPage();
+        }
+    } catch (error: any) {
+        logger.error('Failed to list existing products from Dodo Payments!', error?.message ?? error);
+        process.exit(1);
+    }
+
+    if (duplicates.size > 0) {
+        logger.warn(`${duplicates.size} Lemon Squeezy product(s) already exist more than once in Dodo Payments (left over from earlier runs). The oldest copy of each is used; the extra copies are not touched and can be archived manually.`);
+    }
+
+    return new Map([...migrated].map(([lsId, { productId, name }]) => [lsId, { productId, name }]));
+}
+
+/**
+ * Lists every customer in Dodo Payments, keyed by lowercased email, so license keys can be attached
+ * to customers created by an earlier run.
+ */
+async function fetchDodoCustomersByEmail(client: ReturnType<typeof setupDodoClient>): Promise<Map<string, string>> {
+    const customersByEmail = new Map<string, string>();
+
+    try {
+        let page = await client.customers.list({ page_size: DODO_PAGE_SIZE });
+        while (true) {
+            for (const customer of page.items) {
+                const email = customer.email?.trim().toLowerCase();
+                if (email && !customersByEmail.has(email)) {
+                    customersByEmail.set(email, customer.customer_id);
+                }
+            }
+
+            if (!page.hasNextPage()) break;
+            // 10 req/s = 100ms delay
+            await delay(100);
+            page = await page.getNextPage();
+        }
+    } catch (error: any) {
+        logger.error('Failed to list existing customers from Dodo Payments!', error?.message ?? error);
+        process.exit(1);
+    }
+
+    return customersByEmail;
+}
+
+/**
+ * A Lemon Squeezy product object carries no subscription information. That lives on its variants and their prices,
+ * so we look at the product's default (first non-draft) variant and its price to decide whether it is a subscription.
+ *
+ * Returns:
+ *  - `null` if the product is not a subscription (it keeps being migrated as a one-time product)
+ *  - `'unsupported'` if it is a subscription that cannot be represented as a Dodo recurring price (it is skipped)
+ *  - the pricing details otherwise
+ */
+async function getSubscriptionPricing(productId: string, productName: string): Promise<SubscriptionPricing | null | 'unsupported'> {
+    // 5 req/s = 200ms delay
+    await delay(200);
+    const variantsResponse = await listVariants({
+        filter: { productId },
+        page: { number: 1, size: LS_PAGE_SIZE }
+    });
+    if (variantsResponse.error || variantsResponse.statusCode !== 200) {
+        logger.error(`Failed to fetch variants for product ${productId}`, variantsResponse.error);
+        process.exit(1);
+    }
+
+    // Variants are returned ordered by `sort`. Draft variants are not purchasable, so ignore them.
+    const variants = variantsResponse.data.data.filter((variant) => variant.attributes.status !== 'draft');
+    const defaultVariant = variants[0];
+    if (!defaultVariant) {
+        return null;
+    }
+
+    // 5 req/s = 200ms delay
+    await delay(200);
+    const pricesResponse = await listPrices({
+        filter: { variantId: defaultVariant.id },
+        page: { number: 1, size: LS_PAGE_SIZE }
+    });
+    if (pricesResponse.error || pricesResponse.statusCode !== 200) {
+        logger.error(`Failed to fetch prices for variant ${defaultVariant.id} of product ${productId}`, pricesResponse.error);
+        process.exit(1);
+    }
+
+    const price = pricesResponse.data.data.find((p) => p.attributes.category === 'subscription');
+    if (!price) {
+        return null;
+    }
+
+    if (variants.length > 1) {
+        logger.warn(`Product "${productName}" has ${variants.length} variants. Only its default variant ("${defaultVariant.attributes.name}") will be migrated.`);
+    }
+
+    const attrs = price.attributes;
+    const interval = attrs.renewal_interval_unit;
+    const intervalCount = attrs.renewal_interval_quantity;
+
+    if (!interval || !(interval in DODO_INTERVAL_MAP) || !intervalCount || intervalCount < 1) {
+        logger.warn(`Subscription product "${productName}" has no usable billing interval (${interval} x ${intervalCount}) - skipping`);
+        return 'unsupported';
+    }
+
+    // Usage-based and tiered prices have no single fixed amount, so they cannot be mapped to a recurring price
+    if (attrs.usage_aggregation || attrs.scheme !== 'standard' || attrs.unit_price === null || attrs.unit_price === undefined) {
+        logger.warn(`Subscription product "${productName}" uses usage-based or tiered pricing (${attrs.scheme}), which cannot be migrated - skipping`);
+        return 'unsupported';
+    }
+
+    const trialDays = attrs.trial_interval_unit && attrs.trial_interval_quantity
+        ? attrs.trial_interval_quantity * DAYS_PER_INTERVAL[attrs.trial_interval_unit]
+        : 0;
+
+    return {
+        unitPrice: attrs.unit_price,
+        interval,
+        intervalCount,
+        trialDays
+    };
+}
 
 export default {
     // Format: dodo-migrate [provider] [arguments]
@@ -39,6 +255,12 @@ export default {
             .option('types', {
                 describe: 'Migration types (comma-separated)',
                 type: 'string',
+                demandOption: false
+            })
+            .option('include-inactive-licenses', {
+                describe: 'Also migrate expired and disabled license keys (they are skipped by default). Disabled keys are created and then disabled in Dodo Payments; expired keys keep their expiry date.',
+                type: 'boolean',
+                default: false,
                 demandOption: false
             });
     },
@@ -86,7 +308,7 @@ export default {
         // I've cached this object to prevent rate limiting issues when dealing with multiple Lemon Squeezy products.
         const StoresData: Record<string, Store> = {};
 
-        const Products: { type: 'one_time_product', data: ProductCreateParams, ls_product_id: string }[] = [];
+        const Products: { type: 'one_time_product' | 'subscription_product', data: ProductCreateParams, ls_product_id: string }[] = [];
         const Coupons: { data: any }[] = [];
 
         let completedProducts = false;
@@ -97,29 +319,32 @@ export default {
         const productIdMap = new Map<string, string>();
         const customerIdMap = new Map<string, string>();
 
-        if (migrationTypes.includes('license_keys')) {
-            if (!migrationTypes.includes('products') || !migrationTypes.includes('customers')) {
-                logger.error('License key migration requires products and customers to be migrated in the same session.');
-                logger.error('Please re-run with products, customers, and license keys selected.');
-                process.exit(1);
-            }
-        }
+        // Expired and disabled license keys are skipped unless the merchant explicitly asks for them
+        const includeInactiveLicenses = Boolean(argv['include-inactive-licenses']);
 
         // Migrate products if selected
         if (migrationTypes.includes('products')) {
             logger.log('\nStarting products migration...');
 
-            // List the products from the Lemon Squeezy SDK
-            const ListProducts = await listProducts();
-            if (ListProducts.error || ListProducts.statusCode !== 200) {
-                logger.error("Failed to fetch products from Lemon Squeezy!", ListProducts.error);
-                process.exit(1);
-            }
+            // List every page of products from the Lemon Squeezy SDK
+            const lemonSqueezyProducts = await fetchAllPages('products', (page) => listProducts({ page }));
 
-            logger.log('Found ' + ListProducts.data.data.length + ' products in Lemon Squeezy');
+            logger.log('Found ' + lemonSqueezyProducts.length + ' products in Lemon Squeezy');
+
+            // Products created by an earlier run are recognised by metadata.ls_product_id, so running the tool again never creates copies
+            const alreadyMigratedProducts = await fetchMigratedDodoProducts(client, brand_id);
+            let alreadyMigratedCount = 0;
 
             // Iterate the products
-            for (let product of ListProducts.data.data) {
+            for (let product of lemonSqueezyProducts) {
+                const alreadyMigrated = alreadyMigratedProducts.get(String(product.id));
+                if (alreadyMigrated) {
+                    logger.log(`Skipping product: ${product.attributes.name} - already migrated (Dodo Payments product ID: ${alreadyMigrated.productId})`);
+                    productIdMap.set(String(product.id), alreadyMigrated.productId);
+                    alreadyMigratedCount++;
+                    continue;
+                }
+
                 // This will contain the store information of the current product. This information is crucial to determine the currency of the product.
                 // Do not confuse this with StoresData which is the cache of all stores
                 let StoreData: null | Store = null;
@@ -145,6 +370,44 @@ export default {
                     StoreData = StoresData[product.attributes.store_id];
                 }
 
+                // Work out whether this is a subscription. If it is, build a recurring price with the correct interval.
+                const subscriptionPricing = await getSubscriptionPricing(String(product.id), product.attributes.name);
+
+                if (subscriptionPricing === 'unsupported') {
+                    continue;
+                }
+
+                if (subscriptionPricing) {
+                    Products.push({
+                        type: 'subscription_product',
+                        ls_product_id: String(product.id),
+                        data: {
+                            name: product.attributes.name,
+                            tax_category: 'saas',
+                            price: {
+                                currency: StoreData.data.attributes.currency as any,
+                                price: subscriptionPricing.unitPrice,
+                                discount: 0,
+                                purchasing_power_parity: false,
+                                type: 'recurring_price',
+                                payment_frequency_interval: DODO_INTERVAL_MAP[subscriptionPricing.interval],
+                                payment_frequency_count: subscriptionPricing.intervalCount,
+                                // Dodo Payments recommends a 20 year subscription period so the subscription renews until cancelled
+                                subscription_period_interval: 'Year',
+                                subscription_period_count: 20,
+                                ...(subscriptionPricing.trialDays > 0 ? { trial_period_days: subscriptionPricing.trialDays } : {})
+                            },
+                            brand_id: brand_id,
+                            metadata: {
+                                ls_product_id: String(product.id),
+                                migrated_from: 'lemonsqueezy',
+                                migrated_at: new Date().toISOString()
+                            },
+                        }
+                    });
+                    continue;
+                }
+
                 Products.push({
                     type: 'one_time_product',
                     ls_product_id: String(product.id),
@@ -168,13 +431,29 @@ export default {
                 });
             }
 
-            logger.log('These are the products to be migrated:');
+            if (alreadyMigratedCount > 0) {
+                logger.log(`${alreadyMigratedCount} product(s) were already migrated by an earlier run and will not be created again.`);
+            }
+
+            if (Products.length > 0) {
+                logger.log('These are the products to be migrated:');
+            } else {
+                logger.log('No new products to migrate.');
+            }
             Products.forEach((product, index) => {
-                logger.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${((product.data.price as any).price / 100).toFixed(2)} (${product.type === 'one_time_product' ? 'One Time' : 'Unknown'})`);
+                let typeLabel = 'Unknown';
+                if (product.type === 'one_time_product') {
+                    typeLabel = 'One Time';
+                } else if (product.type === 'subscription_product') {
+                    const recurringPrice = product.data.price as { payment_frequency_count: number; payment_frequency_interval: string };
+                    typeLabel = `Subscription, every ${recurringPrice.payment_frequency_count} ${recurringPrice.payment_frequency_interval.toLowerCase()}(s)`;
+                }
+                logger.log(`${index + 1}. ${product.data.name} - ${product.data.price.currency} ${((product.data.price as any).price / 100).toFixed(2)} (${typeLabel})`);
             });
 
             // Ask the user for final confirmation before creating the products in Dodo Payments
-            const migrateProducts = await select({
+            // Nothing to confirm when every product already exists in Dodo Payments
+            const migrateProducts = Products.length === 0 ? 'yes' : await select({
                 message: 'Proceed to create these products in Dodo Payments?',
                 choices: [
                     { name: 'Yes', value: 'yes' },
@@ -185,7 +464,7 @@ export default {
             if (migrateProducts === 'yes') {
                 for (let product of Products) {
                     logger.log('');
-                    if (product.type === 'one_time_product') {
+                    if (product.type === 'one_time_product' || product.type === 'subscription_product') {
                         logger.log(`Migrating product: ${product.data.name}`);
                         await delay(100);
                         const createdProduct = await client.products.create(product.data);
@@ -195,8 +474,10 @@ export default {
                         logger.log(`Skipping product: ${product.data.name} for unknown product type (example one time, subscription, etc)`);
                     }
                 }
-                logger.success('All products migrated successfully!');
-                completedProducts = true;
+                if (Products.length > 0 || alreadyMigratedCount > 0) {
+                    logger.success('All products migrated successfully!');
+                    completedProducts = true;
+                }
             } else {
                 logger.log('Products migration aborted by user');
             }
@@ -206,17 +487,13 @@ export default {
         if (migrationTypes.includes('coupons')) {
             logger.log('\nStarting coupons migration...');
 
-            // List the discounts from the Lemon Squeezy SDK
-            const ListDiscounts = await listDiscounts();
-            if (ListDiscounts.error || ListDiscounts.statusCode !== 200) {
-                logger.error("Failed to fetch discounts from Lemon Squeezy!", ListDiscounts.error);
-                process.exit(1);
-            }
+            // List every page of discounts from the Lemon Squeezy SDK
+            const lemonSqueezyDiscounts = await fetchAllPages('discounts', (page) => listDiscounts({ page }));
 
-            logger.log('Found ' + ListDiscounts.data.data.length + ' discounts in Lemon Squeezy');
+            logger.log('Found ' + lemonSqueezyDiscounts.length + ' discounts in Lemon Squeezy');
 
             // Filter only published discounts
-            const validDiscounts = ListDiscounts.data.data.filter((discount: any) =>
+            const validDiscounts = lemonSqueezyDiscounts.filter((discount: any) =>
                 discount.attributes.status === 'published'
             );
 
@@ -334,6 +611,12 @@ export default {
                 }
             });
 
+            // Check the response before reading anything from it
+            if (customers.error || customers.statusCode !== 200) {
+                logger.error("Failed to fetch customers from Lemon Squeezy!", customers.error);
+                process.exit(1);
+            }
+
             logger.log('Found ' + customers.data?.meta.page.total + ' customers in Lemon Squeezy');
 
             const proceedCustomersMigration = await select({
@@ -345,27 +628,26 @@ export default {
             });
 
             if (proceedCustomersMigration === 'yes') {
-                if (customers.error || customers.statusCode !== 200) {
-                    logger.error("Failed to fetch customers from Lemon Squeezy!", customers.error);
-                    process.exit(1);
-                }
-
                 // Iterate through all the pages of customers
                 const lastPage = customers.data?.meta?.page?.lastPage ?? 1;
+                // Page 1 is already fetched above, so reuse it instead of requesting it a second time
+                let customersNew: Awaited<ReturnType<typeof listCustomers>> = customers;
                 while (currentPage <= lastPage) {
-                    // Fetch the next page of customers
-                    // 5 req/s = 200ms delay
-                    await delay(200);
-                    const customersNew = await listCustomers({
-                        page: {
-                            number: currentPage,
-                            size: 100
-                        }
-                    });
+                    if (currentPage > 1) {
+                        // Fetch the next page of customers
+                        // 5 req/s = 200ms delay
+                        await delay(200);
+                        customersNew = await listCustomers({
+                            page: {
+                                number: currentPage,
+                                size: 100
+                            }
+                        });
 
-                    if (customersNew.error || customersNew.statusCode !== 200) {
-                        logger.error("Failed to fetch customers from Lemon Squeezy!", customersNew.error);
-                        process.exit(1);
+                        if (customersNew.error || customersNew.statusCode !== 200) {
+                            logger.error("Failed to fetch customers from Lemon Squeezy!", customersNew.error);
+                            process.exit(1);
+                        }
                     }
 
                     for (const user of customersNew.data.data) {
@@ -386,11 +668,30 @@ export default {
         }
 
         if (migrationTypes.includes('license_keys')) {
+            // License keys do not need products and customers to be migrated in the same session.
+            // Products and customers from earlier runs are looked up in Dodo Payments, so an interrupted or resumed migration still works.
+            // Entries created or found earlier in this session take precedence over the lookup.
+            logger.log('\nLooking up products and customers already in Dodo Payments...');
+            const migratedDodoProducts = await fetchMigratedDodoProducts(client, brand_id);
+            for (const [lsProductId, { productId }] of migratedDodoProducts) {
+                if (!productIdMap.has(lsProductId)) productIdMap.set(lsProductId, productId);
+            }
+            const dodoCustomersByEmail = await fetchDodoCustomersByEmail(client);
+            for (const [email, customerId] of dodoCustomersByEmail) {
+                if (!customerIdMap.has(email)) customerIdMap.set(email, customerId);
+            }
+
             if (productIdMap.size === 0 || customerIdMap.size === 0) {
-                logger.error('License key migration requires products and customers to be migrated in the same session.');
-                logger.error('Please re-run with products, customers, and license keys selected.');
+                if (productIdMap.size === 0) {
+                    logger.error('No products migrated from Lemon Squeezy were found in Dodo Payments (looked for metadata.ls_product_id in the selected brand).');
+                    logger.error('Run the products migration first, and check that the same Dodo brand is selected.');
+                }
+                if (customerIdMap.size === 0) {
+                    logger.error('No customers were found in Dodo Payments. Run the customers migration first.');
+                }
                 process.exit(1);
             } else {
+                logger.log(`Found ${productIdMap.size} migrated product(s) and ${customerIdMap.size} customer(s) in Dodo Payments`);
                 logger.log('\nStarting license keys migration...');
 
                 let currentLicensePage = 1;
@@ -420,27 +721,33 @@ export default {
                 logger.log(`Found ${allLicenseKeys.length} license keys in Lemon Squeezy`);
 
                 const licenseKeysToMigrate: LicenseKeyToMigrate[] = [];
-                let skippedCount = 0;
+                const skippedCounts = { disabled: 0, expired: 0, noMatchingProduct: 0, noMatchingCustomer: 0 };
+
+                let includedInactiveCount = 0;
 
                 for (const lk of allLicenseKeys) {
                     const attrs = lk.attributes;
 
-                    if (attrs.disabled === 1 || attrs.status === 'disabled') {
+                    const isDisabledKey = attrs.disabled === 1 || attrs.status === 'disabled';
+                    const isExpiredKey = !isDisabledKey && attrs.status === 'expired';
+
+                    // Disabled and expired keys are skipped by default. --include-inactive-licenses opts in to migrating them.
+                    if (isDisabledKey && !includeInactiveLicenses) {
                         logger.log(`Skipping disabled license key: ${lk.id}`);
-                        skippedCount++;
+                        skippedCounts.disabled++;
                         continue;
                     }
 
-                    if (attrs.status === 'expired') {
+                    if (isExpiredKey && !includeInactiveLicenses) {
                         logger.log(`Skipping expired license key: ${lk.id}`);
-                        skippedCount++;
+                        skippedCounts.expired++;
                         continue;
                     }
 
                     const dodoProductId = productIdMap.get(String(attrs.product_id));
                     if (!dodoProductId) {
                         logger.warn(`License key ${lk.id}: no matching Dodo product for LS product ${attrs.product_id}. Skipping.`);
-                        skippedCount++;
+                        skippedCounts.noMatchingProduct++;
                         continue;
                     }
 
@@ -448,23 +755,46 @@ export default {
                     const dodoCustomerId = normalizedEmail ? customerIdMap.get(normalizedEmail) : undefined;
                     if (!dodoCustomerId) {
                         logger.warn(`License key ${lk.id}: no matching Dodo customer for email ${attrs.user_email}. Skipping.`);
-                        skippedCount++;
+                        skippedCounts.noMatchingCustomer++;
                         continue;
                     }
 
                     const activationsLimit = attrs.activation_limit === 0 ? null : attrs.activation_limit;
+
+                    if (isDisabledKey || isExpiredKey) {
+                        includedInactiveCount++;
+                    }
+
+                    // An expired key with no expiry date would be created as a key that never expires, so stamp it as expired now
+                    const expiresAt = attrs.expires_at || (isExpiredKey ? new Date().toISOString() : null);
 
                     licenseKeysToMigrate.push({
                         key: attrs.key,
                         dodo_customer_id: dodoCustomerId,
                         dodo_product_id: dodoProductId,
                         activations_limit: activationsLimit,
-                        expires_at: attrs.expires_at || null,
+                        expires_at: expiresAt,
+                        // Dodo Payments cannot create a key in a disabled state, so disabled keys are disabled right after creation
+                        disabled: isDisabledKey,
                         source_key_id: String(lk.id),
                         display_key: `****${attrs.key.slice(-6)}`,
                         product_name: `Product ${attrs.product_id}`,
                         customer_email: attrs.user_email
                     });
+                }
+
+                // Reported before the "nothing to migrate" check so the reasons are visible even when every key was skipped
+                const totalSkipped = skippedCounts.disabled + skippedCounts.expired + skippedCounts.noMatchingProduct + skippedCounts.noMatchingCustomer;
+                if (totalSkipped > 0) {
+                    logger.warn(`${totalSkipped} license keys were skipped:`);
+                    logger.warn(`  - ${skippedCounts.disabled} disabled`);
+                    logger.warn(`  - ${skippedCounts.expired} expired`);
+                    logger.warn(`  - ${skippedCounts.noMatchingProduct} no matching Dodo product`);
+                    logger.warn(`  - ${skippedCounts.noMatchingCustomer} no matching Dodo customer`);
+                }
+
+                if (includedInactiveCount > 0) {
+                    logger.log(`${includedInactiveCount} expired/disabled license key(s) are included because --include-inactive-licenses was set`);
                 }
 
                 if (licenseKeysToMigrate.length === 0) {
@@ -474,12 +804,9 @@ export default {
                     licenseKeysToMigrate.forEach((lk, index) => {
                         const limit = lk.activations_limit !== null ? `${lk.activations_limit} activations` : 'Unlimited';
                         const expiry = lk.expires_at ? new Date(lk.expires_at).toLocaleDateString() : 'Never';
-                        logger.log(`${index + 1}. ${lk.display_key} - ${lk.customer_email} - ${limit} - Expires: ${expiry}`);
+                        const disabledLabel = lk.disabled ? ' - DISABLED' : '';
+                        logger.log(`${index + 1}. ${lk.display_key} - ${lk.customer_email} - ${limit} - Expires: ${expiry}${disabledLabel}`);
                     });
-
-                    if (skippedCount > 0) {
-                        logger.warn(`${skippedCount} license keys were skipped (disabled/expired/unmapped)`);
-                    }
 
                     const migrateLicenseKeysConfirm = await select({
                         message: `Proceed to create ${licenseKeysToMigrate.length} license keys in Dodo Payments?`,
@@ -527,7 +854,18 @@ export default {
                                     activations_limit: lk.activations_limit,
                                     expires_at: lk.expires_at,
                                 });
-                                logger.success(`Migrated license key: ${lk.display_key} (Dodo ID: ${created.id})`);
+                                if (lk.disabled) {
+                                    try {
+                                        await delay(100);
+                                        await client.licenseKeys.update(created.id, { disabled: true });
+                                    } catch (disableError: any) {
+                                        // The key now exists and is active in Dodo, so make this impossible to miss
+                                        logger.error(`License key ${lk.display_key} was created in Dodo (ID: ${created.id}) but could NOT be disabled: ${disableError.message}. It is currently active - disable it manually.`);
+                                        lkFailureCount++;
+                                        continue;
+                                    }
+                                }
+                                logger.success(`Migrated license key: ${lk.display_key} (Dodo ID: ${created.id})${lk.disabled ? ' - disabled' : ''}`);
                                 lkSuccessCount++;
                             } catch (error: any) {
                                 if (error.status === 409) {
